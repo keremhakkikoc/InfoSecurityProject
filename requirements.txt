@@ -1,0 +1,2 @@
+# Kriptografik işlemler (RSA pub/priv key üretimi, sertifika imzalama, HKDF, AES vb.)
+cryptography>=41.0.0
