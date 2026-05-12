@@ -7,6 +7,16 @@ __pycache__/
 .pytest_cache/
 pytest-cache-files-*/
 
+# Coverage artifacts (pytest --cov)
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Ruff / lint caches
+.ruff_cache/
+.mypy_cache/
+
 # Virtualenvs
 venv/
 .venv/

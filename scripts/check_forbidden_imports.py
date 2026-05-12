@@ -22,9 +22,8 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 DEFAULT_ROOTS = ("zerotrust",)
 EXCLUDED_DIRS = {"tests", "__pycache__", ".pytest_cache", "legacy", "venv", ".venv"}

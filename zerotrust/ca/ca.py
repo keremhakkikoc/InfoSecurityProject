@@ -26,8 +26,8 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from ..common import crypto_primitives as cp
 from ..common.logger import fingerprint, get_logger

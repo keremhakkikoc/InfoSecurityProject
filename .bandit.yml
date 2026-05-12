@@ -1,0 +1,15 @@
+# Bandit configuration for the zero-trust file drop project.
+# Run via: bandit -q -r zerotrust -c .bandit.yml
+
+# Don't recurse into these paths.
+exclude_dirs:
+  - venv
+  - .venv
+  - legacy
+  - zerotrust/tests
+
+# We intentionally use os.urandom and the secrets module (good practice).
+# B311 (random) is already covered by our forbidden-imports check.
+# B101 (assert) is fine — we don't run with -O.
+skips:
+  - B101  # assert_used
