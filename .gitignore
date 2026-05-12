@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+pytest-cache-files-*/
+
+# Virtualenvs
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Generated keys & certs (never commit secrets)
+ca_data/
+users/
+server/storage/
+server/logs/
+client_*/
+*.pem
+!legacy/**/*.pem
+*.db
+*.log

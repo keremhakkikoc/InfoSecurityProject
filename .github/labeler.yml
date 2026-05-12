@@ -1,0 +1,48 @@
+# Path-based PR labels. Three people work in parallel during M2/M3; this
+# makes it obvious at a glance which subsystem each PR touches.
+
+"area: common":
+  - changed-files:
+      - any-glob-to-any-file:
+          - zerotrust/common/**
+
+"area: ca":
+  - changed-files:
+      - any-glob-to-any-file:
+          - zerotrust/ca/**
+
+"area: server":
+  - changed-files:
+      - any-glob-to-any-file:
+          - zerotrust/server/**
+
+"area: client":
+  - changed-files:
+      - any-glob-to-any-file:
+          - zerotrust/client/**
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - zerotrust/tests/**
+          - pytest.ini
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - ARCHITECTURE.md
+          - AI.md
+          - README.md
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+          - scripts/**
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - requirements.txt
+          - .github/dependabot.yml
