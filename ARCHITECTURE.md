@@ -407,8 +407,11 @@ def hkdf_derive(ikm: bytes, salt: bytes, info: bytes, length: int, extra: str = 
 def issue_certificate(subject: str, subject_pubkey_pem: bytes,
                       ca_priv_pem: bytes, ca_password: bytes,
                       validity_days: int = 365) -> dict: ...
-def verify_certificate(cert: dict, ca_pubkey_pem: bytes) -> bool: ...
-    # returns True iff signature valid AND not expired
+def verify_certificate(cert: dict, ca_pubkey_pem: bytes,
+                       expected_subject: str | None = None) -> bool: ...
+    # returns True iff signature valid AND not expired AND (if given)
+    # cert['subject'] == expected_subject. Default keeps every existing
+    # call site working.
 
 # common/protocol.py
 def pack_message(msg: dict) -> bytes: ...    # 4-byte length + JSON
