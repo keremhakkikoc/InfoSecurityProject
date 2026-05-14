@@ -46,6 +46,41 @@ def test_verify_rejects_tampered_subject(ca_keys, user_keys):
     assert cert_mod.verify_certificate(cert, ca_pub) is False
 
 
+# ---------------------------------------------------------------------------
+# Subject pinning (#6) — third check from ARCHITECTURE.md §3.4
+# ---------------------------------------------------------------------------
+
+def test_verify_with_matching_expected_subject(ca_keys, user_keys):
+    """When expected_subject matches the cert's subject, verification passes."""
+    ca_priv, ca_pub = ca_keys
+    _, user_pub = user_keys
+    cert = cert_mod.issue_certificate("alice", user_pub, ca_priv, PASSWORD)
+    assert cert_mod.verify_certificate(cert, ca_pub, expected_subject="alice") is True
+
+
+def test_verify_with_mismatched_expected_subject(ca_keys, user_keys):
+    """An otherwise-valid cert is rejected if the subject does not match.
+
+    This is the defence against identity-substitution: an attacker who replays
+    Alice's cert during a handshake where the server expected Bob must be
+    rejected before any session key is established.
+    """
+    ca_priv, ca_pub = ca_keys
+    _, user_pub = user_keys
+    cert = cert_mod.issue_certificate("alice", user_pub, ca_priv, PASSWORD)
+    assert cert_mod.verify_certificate(cert, ca_pub, expected_subject="mallory") is False
+
+
+def test_verify_default_subject_arg_keeps_old_behaviour(ca_keys, user_keys):
+    """Calling without expected_subject behaves exactly like before #6."""
+    ca_priv, ca_pub = ca_keys
+    _, user_pub = user_keys
+    cert = cert_mod.issue_certificate("alice", user_pub, ca_priv, PASSWORD)
+    # Two-arg form == three-arg form with expected_subject=None.
+    assert cert_mod.verify_certificate(cert, ca_pub) is True
+    assert cert_mod.verify_certificate(cert, ca_pub, expected_subject=None) is True
+
+
 def test_verify_rejects_tampered_pubkey(ca_keys, user_keys):
     ca_priv, ca_pub = ca_keys
     _, user_pub = user_keys

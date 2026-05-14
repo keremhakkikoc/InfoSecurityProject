@@ -20,7 +20,7 @@ Frozen signatures (per ARCHITECTURE.md §10.1):
 
     issue_certificate(subject, subject_pubkey_pem, ca_priv_pem, ca_password,
                       validity_days=365) -> dict
-    verify_certificate(cert, ca_pubkey_pem) -> bool
+    verify_certificate(cert, ca_pubkey_pem, expected_subject=None) -> bool
 """
 
 from __future__ import annotations
@@ -74,12 +74,25 @@ def issue_certificate(
     return cert
 
 
-def verify_certificate(cert: dict, ca_pubkey_pem: bytes) -> bool:
-    """Return True iff signature is valid AND the cert is currently in date.
+def verify_certificate(
+    cert: dict,
+    ca_pubkey_pem: bytes,
+    expected_subject: str | None = None,
+) -> bool:
+    """Return True iff signature is valid, cert is currently in date, AND
+    (if ``expected_subject`` is supplied) the cert's subject matches.
 
-    Returns False — never raises — on any malformed cert. Subject matching
-    against an expected identity is the caller's responsibility (see
-    ARCHITECTURE.md §3.4 step 3).
+    All three checks from ARCHITECTURE.md §3.4 are enforced here:
+      1. ``valid_until > now >= valid_from``
+      2. RSA-PSS signature verifies against ``ca_pubkey_pem``
+      3. (optional) ``cert["subject"] == expected_subject``
+
+    Returns False — never raises — on any malformed cert or check failure.
+
+    The subject comparison uses plain ``==`` deliberately: subjects are
+    public identifiers, not secrets, so there is no timing side-channel
+    concern (AI.md §1.13 mandates constant-time only for MACs / signatures
+    / nonces).
     """
     if not isinstance(cert, dict):
         return False
@@ -98,4 +111,8 @@ def verify_certificate(cert: dict, ca_pubkey_pem: bytes) -> bool:
     now = int(time.time())
     if not (cert["valid_from"] <= now <= cert["valid_until"]):
         return False
+
+    if expected_subject is not None and cert["subject"] != expected_subject:
+        return False
+
     return True

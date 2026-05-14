@@ -57,7 +57,7 @@ EXPECTED: list[tuple[str, str, str]] = [
      "(subject: str, subject_pubkey_pem: bytes, ca_priv_pem: bytes, "
      "ca_password: bytes, validity_days: int = 365) -> dict"),
     ("zerotrust.ca.cert", "verify_certificate",
-     "(cert: dict, ca_pubkey_pem: bytes) -> bool"),
+     "(cert: dict, ca_pubkey_pem: bytes, expected_subject: str | None = None) -> bool"),
 
     # common.protocol
     ("zerotrust.common.protocol", "pack_message", "(msg: dict) -> bytes"),
