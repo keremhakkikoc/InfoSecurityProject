@@ -1,6 +1,7 @@
+import os
 import sqlite3
 import time
-import os
+
 
 def open_connection(db_path: str) -> sqlite3.Connection:
     # KURAL: Parent directory'nin var olduğundan emin ol
