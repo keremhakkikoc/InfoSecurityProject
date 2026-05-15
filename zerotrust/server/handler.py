@@ -1,5 +1,4 @@
 import logging
-import sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,6 @@ def serve_connection(sock, addr, server_state):
     # nesnesini açmalıdır. Aksi halde thread-safety sorunları ve "database is locked" 
     # hataları alınır. SQLite, varsayılan olarak multi-threading ortamlarda aynı 
     # bağlantının paylaşılmasını engeller.
-    db_path = server_state.get('db_path', 'server/storage/metadata.db')
     # db_conn = sqlite3.connect(db_path)
     # try:
     #     ... veritabanı işlemleri ...

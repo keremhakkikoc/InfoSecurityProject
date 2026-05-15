@@ -15,16 +15,16 @@ and end-to-end encryption are implemented from scratch on top of the
 
 ## Team Members
 
-- [Your Name] — Team Leader
-- [Member 2 Name]
-- [Member 3 Name]
+- Alp Büyükköse— Team Leader
+- Kerem Hakkı Koç
+- Turgut Köroğlu
 
 ## Project Status
 
 | Milestone | Status |
 |---|---|
-| **M1 — Foundation (solo)** | ✅ Complete (this commit) |
-| M2 — Handshake + Upload (parallel) | 🟡 Skeleton in place, ready to start |
+| **M1 — Foundation (solo)** | ✅ Complete |
+| M2 — Handshake + Upload (parallel) | ✅ Complete (this PR) |
 | M3 — Download + Hardening + Bonus | ⚪ Not started |
 
 ### What M1 ships
@@ -132,6 +132,18 @@ accepts:
 
 This fallback is documented here, as required. Production deployments would
 prompt interactively or use an OS keychain.
+
+## Section 2 — Secure Handshake and Session Key Establishment
+
+Because the assignment requirements strictly prohibit... (Antigravity'nin metninin devamı)
+
+## Section 3 — Secure File Encryption and Upload
+
+For end-to-end encryption, we selected AES-256-GCM... (Antigravity'nin metninin devamı)
+
+## Section 4 — Digital Signature and Integrity Verification
+
+To guarantee non-repudiation and origin authenticity... (Antigravity'nin metninin devamı)
 
 ## Frozen Cryptographic Choices
 
