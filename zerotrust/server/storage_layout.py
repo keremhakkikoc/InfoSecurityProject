@@ -1,5 +1,6 @@
 import os
 
+
 def pubkey_path_for(storage_base: str, username: str) -> str:
     """
     Kullanıcının public key JSON dosyasının bulunduğu disk yolunu döndürür.

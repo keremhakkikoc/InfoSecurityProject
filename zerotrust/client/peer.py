@@ -1,9 +1,10 @@
-import json
-import socket
 import base64
+import json
+
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.x509.oid import NameOID
+
 
 def fetch_peer_cert(session: dict, username: str) -> dict | None:
     """
@@ -68,6 +69,6 @@ def fetch_peer_cert(session: dict, username: str) -> dict | None:
             
         return cert_json
         
-    except Exception as e:
+    except Exception:
         # Ağ hatası, decode hatası veya Kripto doğrulama hatası (InvalidSignature vb.)
         return None

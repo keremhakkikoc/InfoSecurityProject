@@ -1,15 +1,16 @@
-import logging
-import sqlite3
-import json
 import base64
-import os
 import hashlib
+import json
+import logging
+import os
+import re
 import time
 import uuid
-import re
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives import hashes
+
 from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+
 from zerotrust.server.storage_layout import pubkey_path_for
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ def _handle_get_pubkey(conn, session, payload):
         return
         
     try:
-        with open(cert_path, "r") as f:
+        with open(cert_path) as f:
             cert_json = json.load(f)
             
         # KURAL: Sunucu Tarafı Derinlemesine Savunma (Defense in Depth)
