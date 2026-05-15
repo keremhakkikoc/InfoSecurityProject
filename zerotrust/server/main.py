@@ -1,8 +1,8 @@
-import os
-import sys
 import argparse
 import logging
+import os
 import socketserver
+
 from zerotrust.server.handler import serve_connection
 
 logging.basicConfig(
@@ -19,8 +19,8 @@ class ZeroTrustServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, server_address, RequestHandlerClass, server_state):
-        super().__init__(server_address, RequestHandlerClass)
+    def __init__(self, server_address, request_handler_class, server_state):
+        super().__init__(server_address, request_handler_class)
         self.server_state = server_state
 
 def main():
