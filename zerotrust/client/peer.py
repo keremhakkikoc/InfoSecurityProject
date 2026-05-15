@@ -1,74 +1,68 @@
-import base64
-import json
+"""Client helper for fetching another user's CA-signed cert from the
+server's pubkey directory.
 
-from cryptography import x509
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.x509.oid import NameOID
+The returned cert is verified against the LOCAL CA trust anchor before
+returning, so the server is treated as an untrusted relay — this is the
+zero-trust property of the directory.
+"""
+
+from __future__ import annotations
+
+import socket
+
+from zerotrust.ca.cert import verify_certificate
+from zerotrust.common.exceptions import AuthError, ProtocolError
+from zerotrust.common.protocol import (
+    make_envelope,
+    recv_message,
+    send_message,
+    validate_envelope,
+)
 
 
-def fetch_peer_cert(session: dict, username: str) -> dict | None:
+def fetch_peer_cert(
+    sock: socket.socket,
+    ca_pubkey_pem: bytes,
+    username: str,
+) -> dict:
+    """Ask the server for ``username``'s cert; verify locally; return dict.
+
+    Args:
+        sock: an already-connected socket to the server. (Future PRs may
+            require this socket to be inside an authenticated session;
+            for #21 we keep the dependency loose so unit tests don't
+            need a full handshake.)
+        ca_pubkey_pem: the local CA trust anchor PEM bytes.
+        username: subject to fetch.
+
+    Returns:
+        The cert dict (after subject + signature verification).
+
+    Raises:
+        AuthError: server returned NOT_FOUND, or the cert it sent fails
+            local verification, or the returned subject doesn't match.
+        ProtocolError: malformed envelope on the wire.
     """
-    İstemci tarafında hedef kullanıcının sertifikasını sunucudan çeker
-    ve güvenli bir şekilde sıfır-güven (Zero-Trust) mantığıyla doğrular.
-    """
-    conn = session.get("conn") # Socket instance
-    ca_cert = session.get("ca_cert") # İstemcinin yerel CA Trust Anchor'ı
-    
-    payload = {
-        "action": "GET_PUBKEY",
-        "username": username
-    }
-    
-    try:
-        conn.sendall(json.dumps(payload).encode('utf-8') + b'\n')
-        
-        # Sunucudan yanıt bekle
-        response_bytes = b""
-        while True:
-            chunk = conn.recv(4096)
-            if not chunk:
-                break
-            response_bytes += chunk
-            if b'\n' in chunk:
-                break
-                
-        if not response_bytes:
-            return None
-            
-        response = json.loads(response_bytes.decode('utf-8').strip())
-        
-        if response.get("status") != "PUBKEY_RESPONSE":
-            return None
-            
-        cert_json = response.get("cert")
-        if not cert_json or "cert_pem" not in cert_json:
-            return None
-            
-        # KURAL: İstemci Tarafı Sıfır Güven (Zero-Trust)
-        # Gelen sertifikayı KENDİ yerel CA Trust Anchor'ı ile doğrula
-        cert_pem_bytes = base64.b64decode(cert_json["cert_pem"])
-        peer_cert = x509.load_pem_x509_certificate(cert_pem_bytes)
-        
-        ca_public_key = ca_cert.public_key()
-        ca_public_key.verify(
-            peer_cert.signature,
-            peer_cert.tbs_certificate_bytes,
-            padding.PKCS1v15(),
-            peer_cert.signature_hash_algorithm,
+    send_message(sock, make_envelope("GET_PUBKEY", {"username": username}))
+
+    response = validate_envelope(recv_message(sock))
+    if response["type"] == "ERROR":
+        code = response["payload"].get("code", "UNKNOWN")
+        raise AuthError(f"GET_PUBKEY failed: {code}")
+    if response["type"] != "PUBKEY_RESPONSE":
+        raise ProtocolError(
+            f"expected PUBKEY_RESPONSE, got {response['type']!r}"
         )
-        
-        # KURAL: Sertifikadaki subject değeri istenilen username ile EŞLEŞMELİDİR
-        subject_names = peer_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-        if not subject_names:
-            return None
-            
-        cert_username = subject_names[0].value
-        if cert_username != username:
-            # Impersonation / MitM attempt!
-            return None
-            
-        return cert_json
-        
-    except Exception:
-        # Ağ hatası, decode hatası veya Kripto doğrulama hatası (InvalidSignature vb.)
-        return None
+
+    cert = response["payload"].get("cert")
+    if not isinstance(cert, dict):
+        raise ProtocolError("PUBKEY_RESPONSE missing cert dict")
+
+    # Zero-trust: never accept the server's word — verify against our
+    # OWN CA trust anchor, AND require the subject to match what we asked
+    # for (defeats a hostile server swapping certs).
+    if not verify_certificate(cert, ca_pubkey_pem, expected_subject=username):
+        raise AuthError(
+            f"peer cert for {username!r} failed local CA verification"
+        )
+    return cert

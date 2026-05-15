@@ -1,156 +1,241 @@
-import unittest
-import socket
+"""Tests for #21 — GET_PUBKEY / PUBKEY_RESPONSE roundtrip + defences."""
+
+from __future__ import annotations
+
 import json
-import base64
-import time
 import os
+import socket
 import threading
-import uuid
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography import x509
-from cryptography.x509.oid import NameOID
-import datetime
-import socketserver
-import zerotrust.server.handler as handler
+from pathlib import Path
 
-class ZeroTrustRequestHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        handler.serve_connection(self.request, self.client_address, self.server.server_state)
+import pytest
 
-class ZeroTrustServer(socketserver.ThreadingTCPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-    def __init__(self, server_address, RequestHandlerClass, server_state):
-        super().__init__(server_address, RequestHandlerClass)
-        self.server_state = server_state
+from zerotrust.ca import cert as cert_mod
 from zerotrust.client.peer import fetch_peer_cert
-import zerotrust.server.storage_layout as storage_layout
+from zerotrust.common import crypto_primitives as cp
+from zerotrust.common.exceptions import AuthError
+from zerotrust.common.protocol import make_envelope, recv_message, send_message
+from zerotrust.server.handler import serve_connection
+from zerotrust.server.storage_layout import (
+    USERNAME_REGEX,
+    pubkey_path_for,
+)
 
-class TestPubkeyDirectory(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        # Gerçekçi CA ve Client Cert oluştur
-        cls.ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, u"Test CA")])
-        cls.ca_cert = x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).public_key(
-            cls.ca_key.public_key()).serial_number(1).not_valid_before(
-            datetime.datetime.utcnow()).not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=1)).sign(cls.ca_key, hashes.SHA256())
 
-        cls.client_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        c_sub = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, u"bob")])
-        cls.client_cert = x509.CertificateBuilder().subject_name(c_sub).issuer_name(issuer).public_key(
-            cls.client_key.public_key()).serial_number(2).not_valid_before(
-            datetime.datetime.utcnow()).not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=1)).sign(cls.ca_key, hashes.SHA256())
+PASSWORD = b"pubkey-test-password"
 
-        cls.cert_bytes = cls.client_cert.public_bytes(serialization.Encoding.PEM)
 
-    def setUp(self):
-        self.upload_dir = f"server_data_test_{uuid.uuid4()}"
-        pubkeys_dir = os.path.join(self.upload_dir, "pubkeys")
-        os.makedirs(pubkeys_dir, exist_ok=True)
-        
-        self.server_state = {
-            "upload_dir": self.upload_dir,
-            "ca_cert": self.ca_cert  # Sunucu içi Defense-in-depth CA verify için
-        }
-        
-        self.server = ZeroTrustServer(('127.0.0.1', 0), ZeroTrustRequestHandler, self.server_state)
-        self.port = self.server.server_address[1]
-        self.server_thread = threading.Thread(target=self.server.serve_forever)
-        self.server_thread.daemon = True
-        self.server_thread.start()
+@pytest.fixture
+def ca_keys():
+    return cp.generate_rsa_keypair(PASSWORD)
 
-    def tearDown(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.server_thread.join()
-        
-        # Cleanup
-        if os.path.exists(self.upload_dir):
-            pubkeys_dir = os.path.join(self.upload_dir, "pubkeys")
-            if os.path.exists(pubkeys_dir):
-                for f in os.listdir(pubkeys_dir):
-                    os.remove(os.path.join(pubkeys_dir, f))
-                os.rmdir(pubkeys_dir)
-            if os.path.exists(self.upload_dir):
-                for f in os.listdir(self.upload_dir):
-                    os.remove(os.path.join(self.upload_dir, f))
-                os.rmdir(self.upload_dir)
 
-    def send_and_receive(self, payload):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.connect(('127.0.0.1', self.port))
-            sock.sendall(json.dumps(payload).encode('utf-8') + b'\n')
-            response_bytes = b""
-            while True:
-                chunk = sock.recv(1024)
-                if not chunk:
-                    break
-                response_bytes += chunk
-                if b'\n' in chunk:
-                    break
-            return json.loads(response_bytes.decode('utf-8').strip())
+@pytest.fixture
+def storage_base(tmp_path: Path, ca_keys) -> str:
+    """A populated storage directory: pubkeys/alice.json and bob.json."""
+    ca_priv, _ = ca_keys
+    pubkeys_dir = tmp_path / "pubkeys"
+    pubkeys_dir.mkdir()
+    for username in ("alice", "bob"):
+        _, user_pub = cp.generate_rsa_keypair(PASSWORD)
+        cert = cert_mod.issue_certificate(username, user_pub, ca_priv, PASSWORD)
+        (pubkeys_dir / f"{username}.json").write_text(
+            json.dumps(cert, sort_keys=True), encoding="utf-8"
+        )
+    return str(tmp_path)
 
-    # 1. Happy fetch
-    def test_happy_fetch(self):
-        # Diske geçerli sertifikayı yaz
-        bob_path = storage_layout.pubkey_path_for(self.upload_dir, "bob")
-        valid_cert_json = {"cert_pem": base64.b64encode(self.cert_bytes).decode('utf-8')}
-        with open(bob_path, "w") as f:
-            json.dump(valid_cert_json, f)
-            
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.connect(('127.0.0.1', self.port))
-            
-            client_session = {
-                "conn": sock,
-                "ca_cert": self.ca_cert
-            }
-            
-            result = fetch_peer_cert(client_session, "bob")
-            self.assertIsNotNone(result)
-            self.assertIn("cert_pem", result)
 
-    # 2. Unknown user
-    def test_unknown_user(self):
-        # alice.json dosyasi yok
-        payload = {"action": "GET_PUBKEY", "username": "alice"}
-        res = self.send_and_receive(payload)
-        self.assertEqual(res["status"], "NOT_FOUND")
+def _run_server(server_state: dict) -> tuple[int, threading.Thread]:
+    """Spin up a one-shot server thread on an ephemeral port."""
+    listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen.bind(("127.0.0.1", 0))
+    listen.listen(1)
+    port = listen.getsockname()[1]
 
-    # 3. Path traversal
-    def test_path_traversal(self):
-        malicious_usernames = [
-            "../bob",
-            "../../etc/passwd",
-            "bob/../bob",
-            "bob\0"
-        ]
-        
-        for bad_user in malicious_usernames:
-            payload = {"action": "GET_PUBKEY", "username": bad_user}
-            res = self.send_and_receive(payload)
-            self.assertEqual(res["status"], "NOT_FOUND", f"Path traversal failed to block: {bad_user}")
+    def run() -> None:
+        try:
+            conn, addr = listen.accept()
+            try:
+                serve_connection(conn, addr, server_state)
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+        finally:
+            listen.close()
 
-    # 4. Corrupted pubkey file
-    def test_corrupted_pubkey_file(self):
-        # Diske geçersiz veri (kırık json veya bad signature) yazalım
-        bob_path = storage_layout.pubkey_path_for(self.upload_dir, "bob")
-        with open(bob_path, "w") as f:
-            f.write("THIS IS NOT A VALID JSON AND CERTAINLY NOT A VALID CERTIFICATE")
-            
-        payload = {"action": "GET_PUBKEY", "username": "bob"}
-        res = self.send_and_receive(payload)
-        # KURAL: Internal hata sizdirmamali, NOT_FOUND donmeli
-        self.assertEqual(res["status"], "NOT_FOUND")
-        
-        # Test 2: Gecerli JSON ama imza yanlis/kirik sertifika pem
-        with open(bob_path, "w") as f:
-            json.dump({"cert_pem": base64.b64encode(b"FAKE_CERT").decode('utf-8')}, f)
-        
-        res2 = self.send_and_receive(payload)
-        self.assertEqual(res2["status"], "NOT_FOUND")
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return port, t
 
-if __name__ == "__main__":
-    unittest.main()
+
+# ---------------------------------------------------------------------------
+# Username regex — the path traversal boundary
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("good", ["alice", "bob_42", "user-1", "A", "z" * 32])
+def test_regex_accepts_safe_usernames(good):
+    assert USERNAME_REGEX.match(good) is not None
+
+
+@pytest.mark.parametrize("bad", [
+    "../etc/passwd",
+    "..",
+    ".",
+    "a/b",
+    "a\\b",
+    "",
+    "z" * 33,           # too long
+    "alice\x00",        # null byte
+    "alice.json",       # dot would let attacker craft paths
+    "  alice",          # whitespace
+])
+def test_regex_rejects_unsafe_usernames(bad):
+    assert USERNAME_REGEX.match(bad) is None
+
+
+# ---------------------------------------------------------------------------
+# pubkey_path_for
+# ---------------------------------------------------------------------------
+
+def test_pubkey_path_for_layout():
+    assert pubkey_path_for("server/storage", "alice").endswith(
+        os.path.join("pubkeys", "alice.json")
+    )
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: fetch_peer_cert + serve_connection
+# ---------------------------------------------------------------------------
+
+def test_fetch_peer_cert_happy_path(ca_keys, storage_base):
+    _, ca_pub = ca_keys
+    port, t = _run_server({
+        "storage_base": storage_base,
+        "ca_pubkey_pem": ca_pub,
+    })
+    sock = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+    try:
+        cert = fetch_peer_cert(sock, ca_pub, "alice")
+    finally:
+        sock.close()
+        t.join(timeout=2.0)
+
+    assert cert["subject"] == "alice"
+    # Returned cert verifies independently against the client's CA.
+    assert cert_mod.verify_certificate(cert, ca_pub) is True
+
+
+def test_fetch_unknown_user_raises_auth_error(ca_keys, storage_base):
+    _, ca_pub = ca_keys
+    port, t = _run_server({
+        "storage_base": storage_base,
+        "ca_pubkey_pem": ca_pub,
+    })
+    sock = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+    try:
+        with pytest.raises(AuthError):
+            fetch_peer_cert(sock, ca_pub, "nonexistent")
+    finally:
+        sock.close()
+        t.join(timeout=2.0)
+
+
+@pytest.mark.parametrize("evil", [
+    "../../../etc/passwd",
+    "..",
+    "a/b",
+    "alice\x00",
+    "alice.json",
+])
+def test_path_traversal_rejected_at_protocol_layer(ca_keys, storage_base, evil):
+    """An attacker who bypasses the client-side regex (e.g. by sending
+    a hand-crafted envelope) still hits the server's regex boundary."""
+    _, ca_pub = ca_keys
+    port, t = _run_server({
+        "storage_base": storage_base,
+        "ca_pubkey_pem": ca_pub,
+    })
+    sock = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+    try:
+        # Hand-craft the request — bypass fetch_peer_cert's regex.
+        send_message(sock, make_envelope("GET_PUBKEY", {"username": evil}))
+        reply = recv_message(sock)
+        assert reply["type"] == "ERROR"
+        assert reply["payload"]["code"] == "NOT_FOUND"
+    finally:
+        sock.close()
+        t.join(timeout=2.0)
+
+
+def test_planted_cert_fails_ca_verification(ca_keys, storage_base, tmp_path):
+    """Defence-in-depth: if an attacker writes a 'cert' file directly to
+    the pubkeys directory, the server's own CA re-verification rejects
+    it — the client never sees a forged peer cert."""
+    _, ca_pub = ca_keys
+    # Plant a self-issued cert (wrong CA) for username 'mallory'.
+    other_ca_priv, _ = cp.generate_rsa_keypair(PASSWORD)
+    _, m_pub = cp.generate_rsa_keypair(PASSWORD)
+    planted = cert_mod.issue_certificate(
+        "mallory", m_pub, other_ca_priv, PASSWORD
+    )
+    (Path(storage_base) / "pubkeys" / "mallory.json").write_text(
+        json.dumps(planted, sort_keys=True), encoding="utf-8"
+    )
+
+    port, t = _run_server({
+        "storage_base": storage_base,
+        "ca_pubkey_pem": ca_pub,
+    })
+    sock = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+    try:
+        with pytest.raises(AuthError):
+            fetch_peer_cert(sock, ca_pub, "mallory")
+    finally:
+        sock.close()
+        t.join(timeout=2.0)
+
+
+def test_subject_swap_attempt_rejected_by_client(ca_keys, storage_base, tmp_path):
+    """A misconfigured (or hostile) server stores Alice's cert in Bob's
+    slot. The client's ``expected_subject`` check catches this — the
+    cert verifies against the CA but the subject is wrong."""
+    _, ca_pub = ca_keys
+    alice_cert = json.loads(
+        (Path(storage_base) / "pubkeys" / "alice.json").read_text()
+    )
+    # Save Alice's cert under Bob's filename. (Server defence catches
+    # this too because verify_certificate is called with
+    # expected_subject=username, but we exercise the client end here.)
+    (Path(storage_base) / "pubkeys" / "carol.json").write_text(
+        json.dumps(alice_cert, sort_keys=True), encoding="utf-8"
+    )
+    port, t = _run_server({
+        "storage_base": storage_base,
+        "ca_pubkey_pem": ca_pub,
+    })
+    sock = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+    try:
+        with pytest.raises(AuthError):
+            fetch_peer_cert(sock, ca_pub, "carol")
+    finally:
+        sock.close()
+        t.join(timeout=2.0)
+
+
+def test_missing_ca_trust_anchor_serves_not_found(ca_keys, storage_base):
+    """If the server's own state is broken (no ca_pubkey_pem), serve
+    NOT_FOUND rather than crashing or leaking the real issue."""
+    _, ca_pub = ca_keys
+    port, t = _run_server({
+        "storage_base": storage_base,
+        # Note: ca_pubkey_pem missing on purpose.
+    })
+    sock = socket.create_connection(("127.0.0.1", port), timeout=3.0)
+    try:
+        with pytest.raises(AuthError):
+            fetch_peer_cert(sock, ca_pub, "alice")
+    finally:
+        sock.close()
+        t.join(timeout=2.0)

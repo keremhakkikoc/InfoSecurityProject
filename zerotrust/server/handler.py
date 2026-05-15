@@ -1,219 +1,139 @@
-import base64
-import hashlib
-import json
+"""Per-connection thread logic.
+
+After the handshake (#8) completes, the handler dispatches on the
+envelope's ``type`` field. This file currently wires:
+  - GET_PUBKEY  (#21, this PR)
+later additions: UPLOAD_REQUEST (#13), LIST/DOWNLOAD/REVOKE (M3).
+"""
+
+from __future__ import annotations
+
 import logging
-import os
-import re
-import time
-import uuid
+import socket
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
+from zerotrust.ca.cert import verify_certificate
+from zerotrust.common.exceptions import ProtocolError
+from zerotrust.common.logger import fingerprint
+from zerotrust.common.protocol import (
+    make_envelope,
+    recv_message,
+    send_message,
+    validate_envelope,
+)
+from zerotrust.server.storage_layout import (
+    USERNAME_REGEX,
+    load_pubkey_cert,
+    pubkey_path_for,
+)
 
-from zerotrust.server.storage_layout import pubkey_path_for
+logger = logging.getLogger("server.handler")
 
-logger = logging.getLogger(__name__)
 
-# --- STUBS (Testlerin geçebilmesi için geçici mock fonksiyonlar) ---
-SEEN_NONCES = set()
-
-def check_and_record_nonce(nonce: str) -> bool:
-    if nonce in SEEN_NONCES:
-        return False
-    SEEN_NONCES.add(nonce)
-    return True
-
-def verify_origin_struct(cert_pem_bytes: bytes, signature_bytes: bytes, payload: dict) -> bool:
+def _send_error(sock: socket.socket, code: str) -> None:
+    """Best-effort generic error to the peer. Per AI.md §4.36 we never
+    leak the real reason — only the generic code goes on the wire."""
     try:
-        canonical_str = f"{payload['sender']}|{payload['recipient']}|{payload['timestamp']}|{payload['nonce']}|{payload['ciphertext_sha256']}|{payload['wrapped_key_sha256']}"
-        cert = x509.load_pem_x509_certificate(cert_pem_bytes)
-        public_key = cert.public_key()
-        
-        public_key.verify(
-            signature_bytes,
-            canonical_str.encode('utf-8'),
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
-        )
-        return True
-    except Exception as e:
-        logger.error(f"Signature verification failed: {e}")
-        return False
+        send_message(sock, make_envelope("ERROR", {"code": code}))
+    except OSError:
+        pass
 
-def store_insert_file(sender, recipient, file_id, expiration):
-    pass # Stub DB operation
 
-def check_recipient_exists(recipient_name):
-    return recipient_name != "unknown_user"
-# --- END STUBS ---
+def _handle_get_pubkey(sock: socket.socket, session: dict, payload: dict) -> None:
+    """Serve a GET_PUBKEY request.
 
-def send_response(sock, response_dict):
-    try:
-        sock.sendall(json.dumps(response_dict).encode('utf-8') + b'\n')
-    except Exception as e:
-        logger.error(f"Hata: {e}")
-
-def _handle_get_pubkey(conn, session, payload):
+    Steps:
+      1. Validate the username against ``USERNAME_REGEX`` — this is the
+         path-traversal boundary. Anything not matching is treated as
+         NOT_FOUND, never a filesystem error.
+      2. Load ``<storage_base>/pubkeys/<username>.json`` if it exists.
+      3. Defence-in-depth: server re-verifies the cert against its own
+         CA trust anchor before returning. A planted-cert attack on the
+         filesystem still produces NOT_FOUND, not a forged peer cert.
+      4. Reply with PUBKEY_RESPONSE carrying the cert dict.
+    """
     username = payload.get("username", "")
-    
-    # KURAL: Güvenlik Sınırı (Regex Boundary) KESİNLİKLE uygulanmalı
-    if not re.match(r"^[a-zA-Z0-9_-]{1,32}$", username):
-        logger.warning(f"Path traversal veya gecersiz karakter denemesi reddedildi: {username}")
-        send_response(conn, {"status": "NOT_FOUND"})
+    if not isinstance(username, str) or not USERNAME_REGEX.match(username):
+        logger.warning("get_pubkey: rejected invalid username")
+        _send_error(sock, "NOT_FOUND")
         return
-        
-    storage_base = session.get("server_state", {}).get("upload_dir", "server/storage")
-    cert_path = pubkey_path_for(storage_base, username)
-    
-    if not os.path.exists(cert_path):
-        send_response(conn, {"status": "NOT_FOUND"})
+
+    storage_base = session.get("server_state", {}).get(
+        "storage_base", "server/storage"
+    )
+    ca_pubkey_pem = session.get("server_state", {}).get("ca_pubkey_pem")
+    if not ca_pubkey_pem:
+        logger.error("get_pubkey: server has no CA trust anchor configured")
+        _send_error(sock, "NOT_FOUND")
         return
-        
-    try:
-        with open(cert_path) as f:
-            cert_json = json.load(f)
-            
-        # KURAL: Sunucu Tarafı Derinlemesine Savunma (Defense in Depth)
-        ca_cert = session.get("server_state", {}).get("ca_cert")
-        if not ca_cert:
-            # Testler veya state eksikliği durumlarında CA trust sağlanamıyorsa
-            logger.error("Sunucu CA Trust Anchor eksik.")
-            send_response(conn, {"status": "NOT_FOUND"})
-            return
-            
-        cert_pem_bytes = base64.b64decode(cert_json.get("cert_pem", ""))
-        peer_cert = x509.load_pem_x509_certificate(cert_pem_bytes)
-        
-        ca_public_key = ca_cert.public_key()
-        ca_public_key.verify(
-            peer_cert.signature,
-            peer_cert.tbs_certificate_bytes,
-            padding.PKCS1v15(),
-            peer_cert.signature_hash_algorithm,
+
+    cert = load_pubkey_cert(storage_base, username)
+    if cert is None:
+        logger.info("get_pubkey: %s not found", username)
+        _send_error(sock, "NOT_FOUND")
+        return
+
+    # Defence-in-depth: the file on disk might have been planted. Verify
+    # against the CA trust anchor AND require subject == username.
+    if not verify_certificate(cert, ca_pubkey_pem, expected_subject=username):
+        logger.warning(
+            "get_pubkey: stored cert for %s failed CA verification (fp=%s)",
+            username, fingerprint(cert.get("public_key_pem", "").encode()),
         )
-        
-        # Diskten okunan veri sağlam, CA doğrulaması tamam. Artık istemciye gönderilebilir.
-        send_response(conn, {
-            "status": "PUBKEY_RESPONSE",
-            "cert": cert_json
-        })
-    except Exception as e:
-        # KURAL: Asla internal error veya dosya sistem hatası sızdırma!
-        logger.error(f"GET_PUBKEY islenirken hata (diske mudahale olabilir mi?): {e}")
-        send_response(conn, {"status": "NOT_FOUND"})
+        _send_error(sock, "NOT_FOUND")
+        return
 
-def _handle_upload_request(conn, session, payload):
+    send_message(sock, make_envelope("PUBKEY_RESPONSE", {"cert": cert}))
+    logger.info("get_pubkey: served cert for %s", username)
+
+
+def _dispatch(sock: socket.socket, session: dict, envelope: dict) -> None:
+    """Route a validated envelope to the right handler.
+
+    Unknown / unsupported types get a generic MALFORMED back. Each handler
+    is responsible for its own error reporting; an unhandled exception
+    bubbles up to ``serve_connection`` which logs and closes.
+    """
+    msg_type = envelope["type"]
+    payload = envelope["payload"]
+
+    if msg_type == "GET_PUBKEY":
+        _handle_get_pubkey(sock, session, payload)
+    else:
+        # Other message types land in later PRs (#13 upload, M3 download).
+        logger.warning("unsupported message type: %s", msg_type)
+        _send_error(sock, "MALFORMED")
+
+
+def serve_connection(sock: socket.socket, addr: tuple, server_state: dict) -> None:
+    """Top-level per-connection routine, run in its own thread.
+
+    For #21 we don't yet exercise the full handshake before dispatch —
+    that integration lands when #13 wires the upload path. For now,
+    handlers that don't require authenticated session state (like
+    GET_PUBKEY) can be served directly. Session-bearing handlers will
+    add the handshake call at the top once #13 lands.
+    """
+    logger.info("[+] connection from %s", addr)
+    session: dict = {
+        "server_state": server_state,
+        "peer_subject": None,
+        "peer_cert": None,
+    }
     try:
-        nonce = payload.get("nonce")
-        if not check_and_record_nonce(nonce):
-            logger.warning(f"Replay attack detected with nonce: {nonce}")
-            send_response(conn, {"status": "REPLAY"})
-            return
-
-        timestamp = float(payload.get("timestamp", 0))
-        if time.time() - timestamp > 40: 
-            logger.warning("Stale timestamp detected.")
-            send_response(conn, {"status": "STALE"})
-            return
-
-        sender = payload.get("sender")
-        if sender != session.get("peer_subject"):
-            logger.error(f"Impersonation attempt! Payload sender: {sender}, Session subject: {session.get('peer_subject')}")
-            send_response(conn, {"status": "AUTH_FAILED"})
-            return
-
-        try:
-            ciphertext_bytes = base64.b64decode(payload["ciphertext"])
-            wrapped_key_bytes = base64.b64decode(payload["wrapped_key"])
-            signature_bytes = base64.b64decode(payload["signature"])
-        except Exception as e:
-            logger.error(f"Base64 decode error: {e}")
-            send_response(conn, {"status": "BAD_REQUEST"})
-            return
-
-        recomputed_cipher_hash = hashlib.sha256(ciphertext_bytes).hexdigest()
-        recomputed_wrapped_hash = hashlib.sha256(wrapped_key_bytes).hexdigest()
-        
-        sig_hash_prefix = hashlib.sha256(signature_bytes).hexdigest()[:8]
-        logger.info(f"Upload hashes: cipher={recomputed_cipher_hash[:8]}, wrapped={recomputed_wrapped_hash[:8]}, sig={sig_hash_prefix}")
-
-        if recomputed_cipher_hash != payload.get("ciphertext_sha256") or recomputed_wrapped_hash != payload.get("wrapped_key_sha256"):
-            logger.error("Hash mismatch! Data tampered.")
-            send_response(conn, {"status": "AUTH_FAILED"})
-            return
-
-        peer_cert = session.get("peer_cert")
-        if not verify_origin_struct(peer_cert, signature_bytes, payload):
-            logger.error("Forged signature detected!")
-            send_response(conn, {"status": "AUTH_FAILED"})
-            return
-
-        recipient = payload.get("recipient")
-        if not check_recipient_exists(recipient):
-            logger.error(f"Unknown recipient: {recipient}")
-            send_response(conn, {"status": "NOT_FOUND"})
-            return
-
-        file_id = str(uuid.uuid4())
-        upload_dir = session.get("server_state", {}).get("upload_dir", "server_data")
-        os.makedirs(upload_dir, exist_ok=True)
-        
-        final_path = os.path.join(upload_dir, file_id)
-        tmp_path = final_path + ".tmp"
-        
-        try:
-            with open(tmp_path, "wb") as f:
-                f.write(ciphertext_bytes)
-            os.rename(tmp_path, final_path)
-            logger.info(f"File {file_id} saved to disk atomically.")
-        except Exception as e:
-            logger.error(f"Disk write error: {e}")
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-            send_response(conn, {"status": "SERVER_ERROR"})
-            return
-
-        expiration = int(time.time()) + (3600 * 24 * 7)
-        store_insert_file(sender, recipient, file_id, expiration)
-
-        send_response(conn, {
-            "status": "UPLOAD_ACK",
-            "file_id": file_id,
-            "expiration": expiration
-        })
-
-    except Exception as e:
-        logger.error(f"Upload handler exception: {e}", exc_info=True)
-        send_response(conn, {"status": "SERVER_ERROR"})
-
-def serve_connection(sock, addr, server_state):
-    logger.info(f"[*] Yeni baglanti kabul edildi: {addr}")
-    try:
-        data = sock.recv(4096)
-        if data:
-            payload = json.loads(data.decode('utf-8'))
-            
-            session = {
-                "peer_subject": payload.get("mock_session_subject"),
-                "peer_cert": base64.b64decode(payload.get("mock_session_cert", "")) if payload.get("mock_session_cert") else None,
-                "server_state": server_state
-            }
-            
-            action = payload.get("action")
-            if action == "UPLOAD":
-                _handle_upload_request(sock, session, payload)
-            elif action == "GET_PUBKEY":
-                _handle_get_pubkey(sock, session, payload)
-            
-    except Exception as e:
-        logger.error(f"[-] {addr} istemcisinde beklenmeyen hata: {e}")
+        envelope = validate_envelope(recv_message(sock))
+        _dispatch(sock, session, envelope)
+    except ProtocolError as exc:
+        logger.warning("[%s] protocol error: %s", addr, exc)
+        _send_error(sock, "MALFORMED")
+    except OSError as exc:
+        # Client disconnected, broken pipe, etc. — log and move on, do
+        # NOT crash the server thread.
+        logger.warning("[%s] socket error: %s", addr, exc)
+    except Exception as exc:  # noqa: BLE001 — last-resort isolation
+        logger.exception("[%s] unexpected handler error: %s", addr, exc)
     finally:
         try:
             sock.close()
-            logger.info(f"[*] Baglanti kapatildi: {addr}")
-        except Exception as e:
-            logger.error(f"[-] {addr} baglantisi kapatilirken hata: {e}")
+        except OSError:
+            pass
+        logger.info("[-] closed %s", addr)
