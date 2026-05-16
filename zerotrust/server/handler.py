@@ -23,7 +23,6 @@ from zerotrust.common.protocol import (
 from zerotrust.server.storage_layout import (
     USERNAME_REGEX,
     load_pubkey_cert,
-    pubkey_path_for,
 )
 
 logger = logging.getLogger("server.handler")
