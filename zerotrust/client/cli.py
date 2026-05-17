@@ -32,7 +32,8 @@ import sys
 from collections.abc import Iterable
 
 from ..common.exceptions import AuthError, CryptoError, ProtocolError, ZeroTrustError
-from .session import ClientAssetError, login_session
+from .session import ClientAssetError, connected_session, login_session
+from .upload import upload_file
 
 AUTH_FAILED = "AUTH_FAILED"
 
@@ -88,8 +89,45 @@ def _not_implemented(command: str) -> int:
     return 2
 
 
-def cmd_upload(args: argparse.Namespace) -> int:  # pragma: no cover - placeholder
-    return _not_implemented("upload")
+def cmd_upload(args: argparse.Namespace) -> int:
+    """Open a session and upload ``args.file`` to ``args.recipient``."""
+    password = _resolve_password(args.password)
+    expiration_seconds = args.expires_days * 86400
+    try:
+        with connected_session(args.user, password) as session:
+            ack = upload_file(
+                session,
+                args.recipient,
+                args.file,
+                expiration_seconds=expiration_seconds,
+            )
+    except FileNotFoundError:
+        # Local file doesn't exist — issue spec says exit 1, no network hit.
+        print("FILE_NOT_FOUND", file=sys.stderr)
+        return 1
+    except ClientAssetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (ConnectionRefusedError, TimeoutError) as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except ProtocolError as exc:
+        # Server-side ERROR codes (NOT_FOUND, AUTH_FAILED, STALE, REPLAY,
+        # MALFORMED, ...) and oversize local checks all surface here.
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (AuthError, CryptoError, ZeroTrustError):
+        print(AUTH_FAILED, file=sys.stderr)
+        return 1
+
+    print(
+        f"Uploaded file_id={ack['file_id']} to {args.recipient}; "
+        f"expires={ack['expiration']}"
+    )
+    return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:  # pragma: no cover - placeholder
@@ -128,6 +166,12 @@ def build_parser() -> argparse.ArgumentParser:
     upload = sub.add_parser("upload", help="Upload a file to a recipient (M2 #12).")
     upload.add_argument("recipient", help="Recipient username.")
     upload.add_argument("file", help="Path to the local file to upload.")
+    upload.add_argument(
+        "--expires-days",
+        type=int,
+        default=7,
+        help="How many days the upload is valid for (default: 7).",
+    )
     upload.set_defaults(func=cmd_upload)
 
     listing = sub.add_parser("list", help="List inbox files (M3 #15).")
