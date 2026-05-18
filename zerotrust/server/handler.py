@@ -24,7 +24,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -41,12 +40,14 @@ from ..common.protocol import (
 )
 from . import replay, store
 from .handshake import perform_server_handshake
+from .storage_layout import (
+    file_blob_path_for,
+    pubkey_path_for,
+    valid_username,
+)
 
 logger = logging.getLogger(__name__)
 
-# Path-traversal safe whitelist used for any filename derived from a
-# user-controlled string (GET_PUBKEY username, UPLOAD_REQUEST recipient).
-_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 _DEMO_SERVER_PASSWORD = b"demo-password"
 
 
@@ -101,46 +102,25 @@ def _load_server_assets(
     return server_cert, private_pem, _server_password(server_state), ca_pubkey_pem
 
 
-def _storage_dir(server_state: dict[str, Any]) -> Path:
-    configured = server_state.get("storage_dir")
-    if configured is not None:
-        return Path(configured)
-    return Path(server_state.get("db_path", "server/storage/metadata.db")).parent
-
-
-def _pubkeys_dir(server_state: dict[str, Any]) -> Path:
-    configured = server_state.get("pubkeys_dir")
-    if configured is not None:
-        return Path(configured)
-    return _storage_dir(server_state) / "pubkeys"
-
-
-def _files_dir(server_state: dict[str, Any]) -> Path:
-    configured = server_state.get("files_dir")
-    if configured is not None:
-        return Path(configured)
-    return _storage_dir(server_state) / "files"
-
-
 def _send_error(sock, code: str) -> None:
     """Generic error to the peer (ARCHITECTURE.md §7.9 — opaque codes)."""
     send_message(sock, make_envelope("ERROR", {"code": code}))
 
 
-def _valid_username(username: Any) -> bool:
-    return isinstance(username, str) and _USERNAME_RE.fullmatch(username) is not None
-
-
 def _load_verified_pubkey_cert(
-    username: str,
+    username: Any,
     server_state: dict[str, Any],
     ca_pubkey_pem: bytes,
 ) -> dict[str, Any] | None:
-    """Return ``username``'s CA-verified cert dict or ``None``."""
-    if not _valid_username(username):
-        return None
-    path = _pubkeys_dir(server_state) / f"{username}.json"
-    if not path.is_file():
+    """Return ``username``'s CA-verified cert dict or ``None``.
+
+    Returns ``None`` for any reason — invalid username, missing file,
+    unreadable file, malformed JSON, signature failure — so the caller
+    can map every miss to a single opaque ``NOT_FOUND`` per AI.md §4.36
+    without leaking which check tripped.
+    """
+    path = pubkey_path_for(server_state, username)
+    if path is None or not path.is_file():
         return None
     try:
         cert = _read_json(path)
@@ -224,7 +204,7 @@ def _handle_upload_request(
         expiration = payload["expiration"]
         if not isinstance(file_id, str) or str(uuid.UUID(file_id)) != file_id:
             raise ProtocolError("invalid file_id")
-        if not _valid_username(recipient):
+        if not valid_username(recipient):
             raise ProtocolError("invalid recipient")
         if not isinstance(timestamp, int) or not isinstance(expiration, int):
             raise ProtocolError("timestamp/expiration must be int")
@@ -264,10 +244,9 @@ def _handle_upload_request(
 
     # 6. Atomic write: *.tmp → os.replace. A crash mid-write leaves no
     #    half-files in the final directory.
-    files_dir = _files_dir(server_state)
-    files_dir.mkdir(parents=True, exist_ok=True)
-    final_path = files_dir / f"{file_id}.bin"
-    tmp_path = files_dir / f"{file_id}.bin.tmp"
+    final_path = file_blob_path_for(server_state, file_id)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = final_path.parent / f"{final_path.name}.tmp"
     try:
         with tmp_path.open("wb") as f:
             f.write(ciphertext)
