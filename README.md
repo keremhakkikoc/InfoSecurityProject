@@ -135,15 +135,105 @@ prompt interactively or use an OS keychain.
 
 ## Section 2 — Secure Handshake and Session Key Establishment
 
-Because the assignment requirements strictly prohibit... (Antigravity'nin metninin devamı)
+The assignment forbids using `ssl`, `pyOpenSSL`, or any pre-built secure-channel
+library, so we hand-rolled the parts TLS would otherwise have done. Both sides
+walk a five-step ladder (see `ARCHITECTURE.md` §7.4 for the full diagram):
+
+```
+HELLO ↔  →  KEY_EXCHANGE  →  AUTH_RESPONSE  →  SESSION_OK
+```
+
+`HELLO` exchanges each peer's CA-signed certificate and a fresh 16-byte nonce;
+both sides verify the peer cert against the same trust anchor before reading
+the embedded public key. The client then RSA-OAEP-encrypts a 32-byte
+pre-master under the server's pubkey and sends `KEY_EXCHANGE`. From the two
+nonces and the pre-master, both sides bind a transcript hash
+`SHA-256(nonce_c ‖ nonce_s ‖ pre_master_ciphertext)`; the AUTH_RESPONSE and
+SESSION_OK signatures cover that hash, so a man-in-the-middle who replays
+fragments of an earlier handshake cannot reconstruct a valid signature.
+**Both** sides sign the transcript (mutual PoP), so an attacker who steals one
+private key can still not impersonate the other party. Finally HKDF-SHA256 is
+seeded with `salt = nonce_c ‖ nonce_s`, `ikm = pre_master`, and the frozen
+info string `b"zerotrust-v1"` to derive directional `c2s_key` and `s2c_key`.
+
+We rejected a pure shared-symmetric-key design (no forward secrecy: a leaked
+long-term key decrypts every past session) and a Diffie-Hellman ladder (an
+extra primitive on top of the RSA stack already mandated for signatures and
+cert verification). RSA-OAEP transport keeps the cryptographic surface to a
+single algorithm family and matches the constraints in `ARCHITECTURE.md` §2.
+
+Demo (after CA bootstrap from Section 1):
+
+```bash
+python -m zerotrust.server.main &
+python -m zerotrust.client.cli --user alice login
+# → Authenticated as alice; session established with zerotrust-server.
+```
 
 ## Section 3 — Secure File Encryption and Upload
 
-For end-to-end encryption, we selected AES-256-GCM... (Antigravity'nin metninin devamı)
+Every file is encrypted with a **fresh** AES-256-GCM key. We chose GCM over
+CBC+HMAC because it is single-pass authenticated encryption — one primitive,
+one nonce, one auth tag — which leaves fewer composition mistakes for a
+reviewer to find. The key is 32 random bytes from `os.urandom`; the 12-byte
+GCM nonce comes from the same source on every call, so the `(key, nonce)`
+pair is unique by construction without any deterministic-nonce optimisation.
+
+The AAD bound into the tag is `f"{file_id}|{sender}|{recipient}".encode()`
+(see `ARCHITECTURE.md` §7.7). This stops the most natural attack on a
+zero-trust drop server: without AAD, a curious server could paste Alice→Bob's
+ciphertext into Carol→Dave's metadata row and the GCM decryption would still
+succeed. With it, the auth tag depends on the routing context, so swapping
+breaks the tag and the recipient sees a `CryptoError`.
+
+The per-file AES key never leaves the client. We wrap it with RSA-OAEP-SHA256
+under the **recipient's** CA-signed public key, fetched at upload time via
+`GET_PUBKEY` and re-verified locally against the CA trust anchor. The server
+stores only the ciphertext on disk and a metadata row with the wrapped key,
+nonce, AAD, hashes and origin signature — schema in `ARCHITECTURE.md` §5.
+Ciphertext lives in `server/storage/files/<file_id>.bin`; writes are done
+through a `*.bin.tmp` + `os.replace` so a crash mid-upload leaves no
+half-files.
+
+Demo:
+
+```bash
+python -m zerotrust.client.cli --user alice upload bob ./report.pdf
+# → Uploaded file_id=<uuid> to bob; expires=<unix>
+```
 
 ## Section 4 — Digital Signature and Integrity Verification
 
-To guarantee non-repudiation and origin authenticity... (Antigravity'nin metninin devamı)
+Every upload carries an RSA-PSS signature over the canonical JSON of the
+seven-field origin struct from `ARCHITECTURE.md` §7.6: `sender`,
+`recipient`, `file_id`, `ciphertext_sha256`, `wrapped_key_sha256`,
+`timestamp`, `expiration`. The signer hashes the bytes produced by
+`canonical_json` (`sort_keys=True, separators=(",", ":")`); any whitespace
+drift invalidates the signature, so canonical serialisation is the single
+source of truth.
+
+The key trick is binding **both** `ciphertext_sha256` AND `wrapped_key_sha256`
+in the same struct. Binding only the ciphertext would let a malicious server
+splice in a wrapped key under an attacker's pubkey; binding only the wrapped
+key would let it substitute a different ciphertext. Binding both forces the
+server to relay exactly what the sender signed — or surface as `AUTH_FAILED`.
+
+We chose RSA-PSS over PKCS#1 v1.5 because PSS has the cleaner provable
+security argument and the implementation cost is identical. Staying RSA-only
+across signatures, OAEP, and the handshake keeps the asymmetric stack to a
+single algorithm family.
+
+Verification runs twice. The server re-runs `verify_origin_struct` on every
+`UPLOAD_REQUEST`, so tampered or replayed packages never reach the DB. On
+`DOWNLOAD_RESPONSE` the recipient re-verifies (#18 / M3) — server-side
+success is not authority.
+
+Demo:
+
+```bash
+pytest zerotrust/tests/test_server_upload.py -k tampered
+# → tampered ciphertext → AUTH_FAILED, no disk write, no row
+```
 
 ## Frozen Cryptographic Choices
 
