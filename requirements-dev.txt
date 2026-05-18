@@ -1,7 +1,7 @@
 # Dev-only dependencies — installed by CI lint job and by `make install-dev`.
 
 # Coverage
-pytest-cov>=5.0.0
+pytest-cov>=7.1.0
 
 # Security linter
 bandit>=1.7.0
