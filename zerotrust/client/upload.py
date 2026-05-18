@@ -37,7 +37,6 @@ from ..common.protocol import (
 )
 from .peer import fetch_peer_cert
 
-
 DEFAULT_EXPIRATION_SECONDS = 7 * 86400  # one week
 
 

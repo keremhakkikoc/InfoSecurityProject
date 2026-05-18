@@ -42,7 +42,6 @@ from ..common.protocol import (
 from . import replay, store
 from .handshake import perform_server_handshake
 
-
 logger = logging.getLogger(__name__)
 
 # Path-traversal safe whitelist used for any filename derived from a
