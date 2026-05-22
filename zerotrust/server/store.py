@@ -110,8 +110,34 @@ def mark_status(conn: sqlite3.Connection, file_id: str, status: str) -> None:
     valid_statuses = ('pending', 'downloaded', 'expired', 'revoked')
     if status not in valid_statuses:
         raise ValueError(f"Geçersiz status: '{status}'. İzin verilenler: {valid_statuses}")
-        
+
     query = "UPDATE files SET status = ? WHERE file_id = ?"
     # KURAL: Transaction yönetimi için with conn kullan
     with conn:
         conn.execute(query, (status, file_id))
+
+
+def mark_expired(conn: sqlite3.Connection, *, now: int | None = None) -> int:
+    """Mark every still-pending file whose expiration has passed as 'expired'.
+
+    Used by the background cleanup thread (ARCHITECTURE.md §6, issue #27).
+    Only rows where ``status='pending' AND expiration < now`` are touched —
+    rows already 'downloaded' / 'expired' / 'revoked' are left alone so
+    audit history is preserved.
+
+    Args:
+        conn: Thread-local sqlite3 connection (AI.md §5 — never shared).
+        now: Override the current time. Defaults to ``int(time.time())``.
+            Tests force-advance the clock by passing this explicitly.
+
+    Returns:
+        Number of rows that flipped to 'expired' in this pass.
+    """
+    cutoff = int(now) if now is not None else int(time.time())
+    query = (
+        "UPDATE files SET status = 'expired' "
+        "WHERE status = 'pending' AND expiration < ?"
+    )
+    with conn:
+        cur = conn.execute(query, (cutoff,))
+        return cur.rowcount

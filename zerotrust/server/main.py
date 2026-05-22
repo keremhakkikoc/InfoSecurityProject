@@ -4,6 +4,7 @@ import os
 import socketserver
 import sys
 
+from zerotrust.server.cleanup import start_cleanup_thread
 from zerotrust.server.handler import serve_connection
 
 logging.basicConfig(
@@ -65,17 +66,25 @@ def main():
     logger.info(f"[*] Sunucu baslatiliyor -> {args.host}:{args.port}")
     logger.info("Kapatmak icin CTRL+C (SIGINT) kullanin.")
 
+    # KURAL: Arka plan temizleme thread'i (ARCHITECTURE.md §6, issue #27).
+    # Daemon olarak başlatılır; kapatmada stop_event set edilir.
+    cleanup_thread, cleanup_stop = start_cleanup_thread(args.db)
+
     try:
         # KURAL: KESİNLİKLE select veya asyncio KULLANMA. socketserver.ThreadingTCPServer kullan.
         # Worker thread'lerde signal.signal() YASAKTIR. (sadece main thread'de handle edilir).
         server.serve_forever()
     except KeyboardInterrupt:
-        # KURAL: Ana thread'de (main) SIGINT / KeyboardInterrupt yakala ve sunucuyu 
+        # KURAL: Ana thread'de (main) SIGINT / KeyboardInterrupt yakala ve sunucuyu
         # temiz bir şekilde kapat (graceful shutdown).
         logger.info("\n[*] SIGINT alindi. Sunucu temiz bir sekilde kapatiliyor...")
     except Exception as e:
         logger.error(f"Sunucu calisirken beklenmeyen hata: {e}")
     finally:
+        cleanup_stop.set()
+        cleanup_thread.join(timeout=5)
+        if cleanup_thread.is_alive():
+            logger.warning("[*] Cleanup thread 5s icinde kapanmadi (daemon, process exit'te oluyor).")
         server.shutdown()
         server.server_close()
         logger.info("[*] Sunucu kapandi.")
