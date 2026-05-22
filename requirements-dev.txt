@@ -4,7 +4,7 @@
 pytest-cov>=7.1.0
 
 # Security linter
-bandit>=1.7.0
+bandit>=1.9.4
 
 # Style/lint
 ruff>=0.6.0
