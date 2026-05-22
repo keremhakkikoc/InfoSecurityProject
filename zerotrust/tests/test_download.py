@@ -1,178 +1,195 @@
+"""Recipient-side verification tests for secure download.
+
+These tests exercise the client without trusting a live server: the fake
+socket returns a DOWNLOAD_RESPONSE package, and ``download_file`` must verify
+the CA-signed sender cert, origin signature, wrapped AES key, AES-GCM AAD, and
+ciphertext tag before writing.
+"""
+
+from __future__ import annotations
+
 import base64
+import hashlib
 import json
-import os
-import shutil
-import tempfile
-import threading
 import time
-import unittest
 import uuid
 from pathlib import Path
+from typing import Any
 
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+import pytest
 
-import subprocess
+from zerotrust.ca import cert as cert_mod
 from zerotrust.client.download import download_file
-from zerotrust.client.session import connected_session
-from zerotrust.client.upload import upload_file
-from zerotrust.common.exceptions import ProtocolError, ZeroTrustError
-from zerotrust.server.store import open_connection
+from zerotrust.common import crypto_primitives as cp
+from zerotrust.common.exceptions import AuthError, CryptoError
+from zerotrust.common.file_crypto import encrypt_file_blob
+from zerotrust.common.key_wrap import wrap_aes_key_for
+from zerotrust.common.origin import sign_origin_struct
+from zerotrust.common.protocol import make_envelope, pack_message
 
-class TestSecureDownload(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        # 1. Kendi CA'mizi ve test kullanicilarini yaratalim
-        cls.test_dir = Path(tempfile.mkdtemp())
-        cls.ca_dir = cls.test_dir / "ca_data"
-        cls.ca_dir.mkdir()
-        
-        # init CA
-        subprocess.run(["python", "-m", "zerotrust.ca.ca", "init", "--out", str(cls.ca_dir), "--password", "ca_pass"], check=True)
-        
-        # alice, bob, mallory yarat (client_<user> formatında)
-        for user in ["alice", "bob", "mallory"]:
-            user_dir = cls.test_dir / f"client_{user}"
-            user_dir.mkdir()
-            subprocess.run(["python", "-m", "zerotrust.ca.ca", "issue", user, "--ca-dir", str(cls.ca_dir), "--user-dir", str(cls.test_dir), "--password", "ca_pass", "--user-password", "user_pass"], check=True)
-            # CA issue komutu, --user-dir/user altinda yaratir, onu tasiyalim:
-            shutil.move(str(cls.test_dir / user / "private.pem"), str(user_dir / "private.pem"))
-            shutil.move(str(cls.test_dir / user / "public.pem"), str(user_dir / "public.pem"))
-            shutil.move(str(cls.test_dir / user / "cert.json"), str(user_dir / "cert.json"))
-            shutil.rmtree(str(cls.test_dir / user))
-            
-            # config.json ve ca_cert.json ekle
-            shutil.copy(cls.ca_dir / "ca_cert.json", user_dir / "ca_cert.json")
-            config = {
-                "server_host": "127.0.0.1",
-                "server_port": 0, # Portu sonra guncelleyecegiz, ama server basladiktan sonra
-                "username": user
-            }
-            (user_dir / "config.json").write_text(json.dumps(config))
-            
-        # 2. Server ayarlamalari
-        cls.server_dir = cls.test_dir / "server"
-        cls.server_dir.mkdir()
-        cls.pubkeys_dir = cls.server_dir / "pubkeys"
-        cls.pubkeys_dir.mkdir()
-        
-        # Kullanıcıların pubkey certlerini server/pubkeys altina kopyala
-        for user in ["alice", "bob", "mallory"]:
-            shutil.copy(cls.test_dir / f"client_{user}" / "cert.json", cls.pubkeys_dir / f"{user}.json")
-            
-        # server cert yarat
-        subprocess.run(["python", "-m", "zerotrust.ca.ca", "issue", "server", "--ca-dir", str(cls.ca_dir), "--user-dir", str(cls.server_dir), "--password", "ca_pass", "--user-password", "demo-password"], check=True)
-        # Server dosyalari server/server/ icine cikarildi. onlari server/ altina purgeliyelim
-        shutil.copy(cls.server_dir / "server" / "cert.json", cls.server_dir / "cert.json")
-        shutil.copy(cls.server_dir / "server" / "private.pem", cls.server_dir / "private.pem")
-        
-        db_path = cls.server_dir / "metadata.db"
-        
-        server_state = {
-            "upload_dir": str(cls.server_dir / "data"),
-            "db_path": str(db_path),
-            "cert_path": str(cls.server_dir / "cert.json"),
-            "key_path": str(cls.server_dir / "private.pem"),
-            "ca_cert_path": str(cls.ca_dir / "ca_cert.json"),
-            "server_password": b"demo-password"
-        }
-        
-        # Server'i baslat
-        from zerotrust.server.main import ZeroTrustServer, ZeroTrustRequestHandler
-        cls.server = ZeroTrustServer(('127.0.0.1', 0), ZeroTrustRequestHandler, server_state)
-        cls.port = cls.server.server_address[1]
-        cls.server_thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.server_thread.start()
-        
-        # Simdi port belli olduguna gore config.json'lari guncelleyelim
-        for user in ["alice", "bob", "mallory"]:
-            config_path = cls.test_dir / f"client_{user}" / "config.json"
-            config = json.loads(config_path.read_text())
-            config["server_port"] = cls.port
-            config_path.write_text(json.dumps(config))
-            
-        # ZEROTRUST_SERVER_HOST env var ayari, client_cli ve upload_file'in baglanacagi yeri gosterir
-        os.environ["ZEROTRUST_SERVER_HOST"] = "127.0.0.1"
-        os.environ["ZEROTRUST_SERVER_PORT"] = str(cls.port)
-        
-        # Testlerde kullanacagimiz sir sakli dosyamiz
-        cls.secret_txt = cls.test_dir / "secret.txt"
-        cls.secret_txt.write_bytes(b"Top secret message from Alice to Bob!")
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-        cls.server_thread.join()
-        shutil.rmtree(cls.test_dir)
-        os.environ.pop("ZEROTRUST_SERVER_HOST", None)
-        os.environ.pop("ZEROTRUST_SERVER_PORT", None)
+CA_PASSWORD = b"ca-test-password"
+ALICE_PASSWORD = b"alice-test-password"
+BOB_PASSWORD = b"bob-test-password"
 
-    def setUp(self):
-        # Her testten once CWD'yi patch et ki client cli dogru keyleri bulsun.
-        # Biz test_dir i CWD yaparsak client.session -> users/{username} diye bulur.
-        self._orig_cwd = os.getcwd()
-        os.chdir(self.test_dir)
-        
-        # Alice, Bob'a dosya yukler
-        with connected_session("alice", b"user_pass") as session:
-            ack = upload_file(session, "bob", str(self.secret_txt))
-            self.file_id = ack["file_id"]
 
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
+class FakeSocket:
+    def __init__(self, incoming: bytes) -> None:
+        self._incoming = bytearray(incoming)
+        self.sent = bytearray()
 
-    def test_happy_path_download(self):
-        """Doğru alıcı paketi indirir, başarıyla deşifre eder ve diske yazar."""
-        with connected_session("bob", b"user_pass") as session:
-            download_file(session, self.file_id)
-            
-        # Dosya diskte olmalı
-        downloaded_file = Path(f"client_bob/downloads/{self.file_id}")
-        self.assertTrue(downloaded_file.exists())
-        self.assertEqual(downloaded_file.read_bytes(), b"Top secret message from Alice to Bob!")
+    def sendall(self, data: bytes) -> None:
+        self.sent.extend(data)
 
-    def test_unauthorized_access(self):
-        """Alice'in dosyasına Mallory erişmeye çalışır -> Sunucu AUTH_FAILED döner."""
-        with connected_session("mallory", b"user_pass") as session:
-            with self.assertRaises(ProtocolError) as ctx:
-                download_file(session, self.file_id)
-            self.assertIn("AUTH_FAILED", str(ctx.exception))
-            
-        # Dosya mallory'ye inmemis olmali
-        downloaded_file = Path(f"client_mallory/downloads/{self.file_id}")
-        self.assertFalse(downloaded_file.exists())
+    def recv(self, n: int) -> bytes:
+        if not self._incoming:
+            return b""
+        chunk = self._incoming[:n]
+        del self._incoming[:n]
+        return bytes(chunk)
 
-    def test_tampered_ciphertext(self):
-        """Sunucu ile istemci arasında ciphertext bozulursa (MITM) -> AES-GCM tag kontrolü patlar, dosya yazılmaz."""
-        # SQLite a girip ciphertext_sha256 yi bozmadan dogrudan diski (blob) bozalim 
-        # Server dosyayi okuyup gonderecek, client decrypt ederken GCM tag patlayacak
-        final_path = self.server_dir / "files" / f"{self.file_id}.bin"
-        content = bytearray(final_path.read_bytes())
-        content[0] ^= 0xFF # İlk baytı boz
-        final_path.write_bytes(content)
-        
-        with connected_session("bob", b"user_pass") as session:
-            with self.assertRaises(ZeroTrustError) as ctx:
-                download_file(session, self.file_id)
-            self.assertIn("authentication failed", str(ctx.exception).lower())
-            
-        downloaded_file = Path(f"client_bob/downloads/{self.file_id}")
-        self.assertFalse(downloaded_file.exists(), "Corrupted file must NOT be written to disk!")
 
-    def test_forged_signature(self):
-        """İmza geçerli değilse -> İstemci dosyayı reddeder."""
-        # Bu senaryoda serverdaki veritabaninda signature alanini bozalim (MITM)
-        db_path = str(self.server_dir / "metadata.db")
-        conn = open_connection(db_path)
-        with conn:
-            conn.execute("UPDATE files SET sender_signature = ? WHERE file_id = ?", (b"fake_signature_bytes", self.file_id))
-        conn.close()
-        
-        with connected_session("bob", b"user_pass") as session:
-            with self.assertRaises(ZeroTrustError) as ctx:
-                download_file(session, self.file_id)
-            self.assertIn("signature validation failed", str(ctx.exception).lower())
-            
-        downloaded_file = Path(f"client_bob/downloads/{self.file_id}")
-        self.assertFalse(downloaded_file.exists())
+@pytest.fixture
+def keys():
+    ca_priv, ca_pub = cp.generate_rsa_keypair(CA_PASSWORD)
+    alice_priv, alice_pub = cp.generate_rsa_keypair(ALICE_PASSWORD)
+    bob_priv, bob_pub = cp.generate_rsa_keypair(BOB_PASSWORD)
+    alice_cert = cert_mod.issue_certificate(
+        "alice",
+        alice_pub,
+        ca_priv,
+        CA_PASSWORD,
+    )
+    bob_cert = cert_mod.issue_certificate("bob", bob_pub, ca_priv, CA_PASSWORD)
+    return {
+        "ca_pub": ca_pub,
+        "alice_priv": alice_priv,
+        "alice_cert": alice_cert,
+        "bob_priv": bob_priv,
+        "bob_cert": bob_cert,
+    }
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def _make_package(
+    keys: dict[str, Any],
+    *,
+    plaintext: bytes = b"secret for bob",
+    aad_override: bytes | None = None,
+    ciphertext_override: bytes | None = None,
+    signature_override: bytes | None = None,
+) -> tuple[str, dict[str, Any]]:
+    file_id = str(uuid.uuid4())
+    timestamp = int(time.time())
+    expiration = timestamp + 3600
+    nonce, ciphertext, aes_key = encrypt_file_blob(plaintext, file_id, "alice", "bob")
+    wrapped_key = wrap_aes_key_for(keys["bob_cert"], aes_key)
+
+    if ciphertext_override is not None:
+        ciphertext = ciphertext_override
+
+    signature = sign_origin_struct(
+        keys["alice_priv"],
+        ALICE_PASSWORD,
+        sender="alice",
+        recipient="bob",
+        file_id=file_id,
+        ciphertext_sha256=hashlib.sha256(ciphertext).hexdigest(),
+        wrapped_key_sha256=hashlib.sha256(wrapped_key).hexdigest(),
+        timestamp=timestamp,
+        expiration=expiration,
+    )
+    if signature_override is not None:
+        signature = signature_override
+
+    payload = {
+        "file_id": file_id,
+        "sender_id": "alice",
+        "timestamp": timestamp,
+        "expiration": expiration,
+        "ciphertext": _b64(ciphertext),
+        "wrapped_key": _b64(wrapped_key),
+        "aes_nonce": _b64(nonce),
+        "aes_aad": _b64(
+            aad_override if aad_override is not None else f"{file_id}|alice|bob".encode()
+        ),
+        "sender_signature": _b64(signature),
+        "sender_cert_json": json.dumps(keys["alice_cert"], sort_keys=True),
+    }
+    return file_id, payload
+
+
+def _session(keys: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    sock = FakeSocket(pack_message(make_envelope("DOWNLOAD_RESPONSE", payload)))
+    return {
+        "sock": sock,
+        "username": "bob",
+        "client_priv_pem": keys["bob_priv"],
+        "client_password": BOB_PASSWORD,
+        "ca_pubkey_pem": keys["ca_pub"],
+    }
+
+
+def test_download_verifies_decrypts_and_writes(keys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    file_id, payload = _make_package(keys, plaintext=b"top secret")
+
+    output_path = download_file(_session(keys, payload), file_id)
+
+    assert output_path == Path("client_bob/downloads") / file_id
+    assert output_path.read_bytes() == b"top secret"
+
+
+def test_download_rejects_wrong_aad_without_writing(keys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    file_id, payload = _make_package(keys, aad_override=b"wrong|aad|context")
+
+    with pytest.raises(CryptoError):
+        download_file(_session(keys, payload), file_id)
+
+    assert not (Path("client_bob/downloads") / file_id).exists()
+
+
+def test_download_rejects_tampered_ciphertext_without_writing(keys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    file_id, payload = _make_package(keys, plaintext=b"top secret")
+    ciphertext = bytearray(base64.b64decode(payload["ciphertext"], validate=True))
+    ciphertext[0] ^= 0x01
+    payload["ciphertext"] = _b64(bytes(ciphertext))
+    payload["sender_signature"] = _b64(
+        sign_origin_struct(
+            keys["alice_priv"],
+            ALICE_PASSWORD,
+            sender="alice",
+            recipient="bob",
+            file_id=file_id,
+            ciphertext_sha256=hashlib.sha256(bytes(ciphertext)).hexdigest(),
+            wrapped_key_sha256=hashlib.sha256(
+                base64.b64decode(payload["wrapped_key"], validate=True)
+            ).hexdigest(),
+            timestamp=payload["timestamp"],
+            expiration=payload["expiration"],
+        )
+    )
+
+    with pytest.raises(CryptoError):
+        download_file(_session(keys, payload), file_id)
+
+    assert not (Path("client_bob/downloads") / file_id).exists()
+
+
+def test_download_rejects_bad_sender_signature_without_writing(
+    keys,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    file_id, payload = _make_package(keys, signature_override=b"not-a-valid-signature")
+
+    with pytest.raises(AuthError):
+        download_file(_session(keys, payload), file_id)
+
+    assert not (Path("client_bob/downloads") / file_id).exists()
