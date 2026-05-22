@@ -33,10 +33,10 @@ def main():
     parser = argparse.ArgumentParser(description="ZeroTrust Secure File Drop Server")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=5050, help="Server port (default: 5050)")
-    parser.add_argument("--db", type=str, default="server/storage/metadata.db", help="SQLite DB path")
+    parser.add_argument("--db", type=str, default="zerotrust/server/storage/metadata.db", help="SQLite DB path")
     parser.add_argument("--ca-cert", type=str, default="ca_data/ca_cert.json", help="CA certificate path")
-    parser.add_argument("--cert", type=str, default="certs/server_cert.pem", help="Server certificate (PEM)")
-    parser.add_argument("--key", type=str, default="certs/server_private.pem", help="Server private key (PEM)")
+    parser.add_argument("--cert", type=str, default="users/server/cert.json", help="Server certificate (CA-signed JSON)")
+    parser.add_argument("--key", type=str, default="users/server/private.pem", help="Server private key (encrypted PEM)")
     
     args = parser.parse_args()
 

@@ -12,7 +12,8 @@ PIP    ?= pip
 
 # All targets are phony — none of these produce a file with the same name.
 .PHONY: help install install-dev test test-cov lint lint-forbidden lint-frozen \
-        lint-bandit lint-ruff format ci ca-init ca-issue clean
+        lint-bandit lint-ruff format ci ca-init ca-issue client-setup \
+        server-register inspect clean
 
 help:
 	@echo "Targets:"
@@ -29,6 +30,9 @@ help:
 	@echo "  ci              full CI sweep locally (test + lint)"
 	@echo "  ca-init         bootstrap CA (writes ca_data/)"
 	@echo "  ca-issue        issue cert: make ca-issue USER=alice"
+	@echo "  client-setup    build client_<user>/ bundle: make client-setup USER=alice"
+	@echo "  server-register register user's pubkey with server: make server-register USER=alice"
+	@echo "  inspect         dump server storage: registered users, file rows, ciphertext blobs"
 	@echo "  clean           remove caches, __pycache__, generated keys/certs"
 
 install:
@@ -72,7 +76,63 @@ ca-issue:
 	fi
 	$(PYTHON) -m zerotrust.ca.ca issue $(USER)
 
+# Assemble a client_<user>/ deployment bundle from the CA-issued assets
+# (users/<user>/) plus the CA trust anchor (ca_data/). Idempotent — re-running
+# overwrites the bundle with the current sources.
+client-setup:
+	@if [ -z "$(USER)" ]; then \
+	    echo "Usage: make client-setup USER=<name>"; exit 2; \
+	fi
+	@if [ ! -f "users/$(USER)/cert.json" ] || [ ! -f "users/$(USER)/private.pem" ]; then \
+	    echo "Missing users/$(USER)/{cert.json,private.pem}. Run 'make ca-issue USER=$(USER)' first."; exit 2; \
+	fi
+	@if [ ! -f "ca_data/ca_cert.json" ]; then \
+	    echo "Missing ca_data/ca_cert.json. Run 'make ca-init' first."; exit 2; \
+	fi
+	mkdir -p client_$(USER)
+	cp users/$(USER)/cert.json   client_$(USER)/cert.json
+	cp users/$(USER)/private.pem client_$(USER)/private.pem
+	cp ca_data/ca_cert.json      client_$(USER)/ca_cert.json
+	@printf '{\n  "username": "$(USER)",\n  "server_host": "127.0.0.1",\n  "server_port": 5050,\n  "server_subject": "server"\n}\n' > client_$(USER)/config.json
+	@echo "Client bundle ready: client_$(USER)/"
+
+# Register USER's CA-signed cert in the server's pubkey directory so recipient
+# lookups (GET_PUBKEY, UPLOAD_REQUEST recipient existence check) succeed.
+# Idempotent.
+server-register:
+	@if [ -z "$(USER)" ]; then \
+	    echo "Usage: make server-register USER=<name>"; exit 2; \
+	fi
+	@if [ ! -f "users/$(USER)/cert.json" ]; then \
+	    echo "Missing users/$(USER)/cert.json. Run 'make ca-issue USER=$(USER)' first."; exit 2; \
+	fi
+	mkdir -p zerotrust/server/storage/pubkeys
+	cp users/$(USER)/cert.json zerotrust/server/storage/pubkeys/$(USER).json
+	@echo "Registered '$(USER)' in server pubkey directory."
+
+# Quick read-only peek into the server's storage area: which users are
+# registered, which file rows exist, and the on-disk ciphertext blobs.
+# Useful for "did the upload actually land?" sanity checks during demos.
+inspect:
+	@echo "=== Registered pubkeys (zerotrust/server/storage/pubkeys/) ==="
+	@ls -1 zerotrust/server/storage/pubkeys/ 2>/dev/null || echo "  (none yet — run 'make server-register USER=<name>')"
+	@echo ""
+	@echo "=== File metadata rows (zerotrust/server/storage/metadata.db) ==="
+	@if [ -f zerotrust/server/storage/metadata.db ]; then \
+	    sqlite3 -header -column zerotrust/server/storage/metadata.db \
+	      "SELECT file_id, sender_id, recipient_id, status, upload_timestamp, expiration FROM files;"; \
+	    echo ""; \
+	    echo "Row count:"; \
+	    sqlite3 zerotrust/server/storage/metadata.db "SELECT COUNT(*) FROM files;"; \
+	else \
+	    echo "  (no DB yet — run an upload first)"; \
+	fi
+	@echo ""
+	@echo "=== Ciphertext blobs (zerotrust/server/storage/files/) ==="
+	@ls -lh zerotrust/server/storage/files/ 2>/dev/null || echo "  (none yet)"
+
 clean:
 	find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 	rm -rf .pytest_cache .ruff_cache .coverage htmlcov
-	rm -rf ca_data users
+	rm -rf ca_data users client_*
+	rm -rf zerotrust/server/storage server/storage

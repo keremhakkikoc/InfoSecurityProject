@@ -36,8 +36,14 @@ ca_data/
 users/
 server/storage/
 server/logs/
+zerotrust/server/storage/
+zerotrust/server/logs/
 client_*/
 *.pem
 !legacy/**/*.pem
 *.db
 *.log
+
+# Demo scratch files
+report.txt
+*.bin
