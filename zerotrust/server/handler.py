@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -285,6 +286,76 @@ def _handle_upload_request(
 
 
 # ---------------------------------------------------------------------------
+# DOWNLOAD_REQUEST
+# ---------------------------------------------------------------------------
+
+
+def _handle_download_request(
+    sock,
+    envelope: dict[str, Any],
+    db_conn,
+    session: dict[str, Any],
+    server_state: dict[str, Any],
+) -> None:
+    payload = envelope["payload"]
+    try:
+        file_id = payload["file_id"]
+    except KeyError:
+        _send_error(sock, "MALFORMED")
+        return
+
+    # Erişim Kontrolü (Access Control)
+    file_record = store.get_file(db_conn, file_id)
+    if not file_record:
+        _send_error(sock, "NOT_FOUND")
+        return
+
+    # KURAL: Eğer veritabanındaki recipient_id, oturumdaki session["peer_subject"] 
+    # ile EŞLEŞMİYORSA anında AUTH_FAILED dön (Yetkisiz erişim engeli).
+    if file_record["recipient_id"] != session["peer_subject"]:
+        logger.warning("Unauthorized download attempt for %s by %s", file_id, session["peer_subject"])
+        _send_error(sock, "AUTH_FAILED")
+        return
+
+    if file_record["status"] != "pending":
+        _send_error(sock, "NOT_FOUND")
+        return
+
+    if file_record["expiration"] < int(time.time()):
+        _send_error(sock, "EXPIRED")
+        return
+
+    # Diskteki ciphertext'i oku
+    final_path = file_blob_path_for(server_state, file_id)
+    if not final_path.is_file():
+        logger.error("File %s metadata exists but blob is missing!", file_id)
+        _send_error(sock, "INTERNAL_ERROR")
+        return
+
+    try:
+        ciphertext = final_path.read_bytes()
+    except OSError:
+        logger.exception("Failed to read blob for %s", file_id)
+        _send_error(sock, "INTERNAL_ERROR")
+        return
+
+    response_payload = {
+        "file_id": file_id,
+        "sender_id": file_record["sender_id"],
+        "timestamp": file_record["upload_timestamp"],
+        "expiration": file_record["expiration"],
+        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+        "wrapped_key": base64.b64encode(file_record["wrapped_key"]).decode("ascii"),
+        "aes_nonce": base64.b64encode(file_record["aes_nonce"]).decode("ascii"),
+        "aes_aad": base64.b64encode(file_record["aes_aad"]).decode("ascii"),
+        "sender_signature": base64.b64encode(file_record["sender_signature"]).decode("ascii"),
+        "sender_cert_json": file_record["sender_cert_json"],
+    }
+
+    send_message(sock, make_envelope("DOWNLOAD_RESPONSE", response_payload))
+    logger.info("download fulfilled file=%s recipient=%s", file_id, session["peer_subject"])
+
+# ---------------------------------------------------------------------------
 # Connection driver
 # ---------------------------------------------------------------------------
 
@@ -336,6 +407,14 @@ def serve_connection(sock, addr, server_state):
                     session,
                     server_state,
                     ca_pubkey_pem,
+                )
+            elif msg_type == "DOWNLOAD_REQUEST":
+                _handle_download_request(
+                    sock,
+                    envelope,
+                    db_conn,
+                    session,
+                    server_state,
                 )
             else:
                 _send_error(sock, "MALFORMED")

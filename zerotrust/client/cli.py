@@ -134,8 +134,31 @@ def cmd_list(args: argparse.Namespace) -> int:  # pragma: no cover - placeholder
     return _not_implemented("list")
 
 
-def cmd_download(args: argparse.Namespace) -> int:  # pragma: no cover - placeholder
-    return _not_implemented("download")
+def cmd_download(args: argparse.Namespace) -> int:
+    """Open a session and download ``args.file_id``."""
+    password = _resolve_password(args.password)
+    from .download import download_file
+    try:
+        with connected_session(args.user, password) as session:
+            download_file(session, args.file_id)
+    except ClientAssetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (ConnectionRefusedError, TimeoutError) as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except ProtocolError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (AuthError, CryptoError, ZeroTrustError):
+        print(AUTH_FAILED, file=sys.stderr)
+        return 1
+
+    print(f"Downloaded file_id={args.file_id}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
