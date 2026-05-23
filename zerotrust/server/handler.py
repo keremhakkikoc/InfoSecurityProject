@@ -154,6 +154,38 @@ def _handle_get_pubkey(
 
 
 # ---------------------------------------------------------------------------
+# LIST_PENDING
+# ---------------------------------------------------------------------------
+
+def _handle_list_pending(
+    sock,
+    db_conn,
+    session: dict[str, Any],
+    server_state: dict[str, Any],
+) -> None:
+    """Return metadata-only pending rows for the authenticated recipient."""
+    recipient = session["peer_subject"]
+    rows = store.list_pending_for(db_conn, recipient)
+    files = []
+    for row in rows:
+        blob_path = file_blob_path_for(server_state, row["file_id"])
+        try:
+            ciphertext_size = blob_path.stat().st_size
+        except OSError:
+            ciphertext_size = None
+        files.append(
+            {
+                "file_id": row["file_id"],
+                "sender_id": row["sender_id"],
+                "upload_timestamp": row["upload_timestamp"],
+                "expiration": row["expiration"],
+                "ciphertext_size": ciphertext_size,
+            }
+        )
+    send_message(sock, make_envelope("PENDING_LIST", {"files": files}))
+
+
+# ---------------------------------------------------------------------------
 # UPLOAD_REQUEST
 # ---------------------------------------------------------------------------
 
@@ -399,6 +431,8 @@ def serve_connection(sock, addr, server_state):
                 _handle_get_pubkey(
                     sock, envelope["payload"], server_state, ca_pubkey_pem
                 )
+            elif msg_type == "LIST_PENDING":
+                _handle_list_pending(sock, db_conn, session, server_state)
             elif msg_type == "UPLOAD_REQUEST":
                 _handle_upload_request(
                     sock,

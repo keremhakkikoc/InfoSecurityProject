@@ -32,6 +32,7 @@ import sys
 from collections.abc import Iterable
 
 from ..common.exceptions import AuthError, CryptoError, ProtocolError, ZeroTrustError
+from .download import list_pending
 from .session import ClientAssetError, connected_session, login_session
 from .upload import upload_file
 
@@ -130,8 +131,34 @@ def cmd_upload(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_list(args: argparse.Namespace) -> int:  # pragma: no cover - placeholder
-    return _not_implemented("list")
+def cmd_list(args: argparse.Namespace) -> int:
+    """Open a session and print the authenticated user's pending files."""
+    password = _resolve_password(args.password)
+    try:
+        with connected_session(args.user, password) as session:
+            rows = list_pending(session)
+    except ClientAssetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (ConnectionRefusedError, TimeoutError) as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except ProtocolError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (AuthError, CryptoError, ZeroTrustError):
+        print(AUTH_FAILED, file=sys.stderr)
+        return 1
+
+    for row in rows:
+        print(
+            f"{row['file_id']} sender={row['sender_id']} "
+            f"expires={row['expiration']}"
+        )
+    return 0
 
 
 def cmd_download(args: argparse.Namespace) -> int:
