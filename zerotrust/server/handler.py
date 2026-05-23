@@ -356,6 +356,44 @@ def _handle_download_request(
     logger.info("download fulfilled file=%s recipient=%s", file_id, session["peer_subject"])
 
 # ---------------------------------------------------------------------------
+# LIST_PENDING
+# ---------------------------------------------------------------------------
+
+def _handle_list_pending(
+    sock,
+    db_conn,
+    session: dict[str, Any],
+    server_state: dict[str, Any],
+) -> None:
+    # KURAL: recipient değerini KESİNLİKLE payload'dan okuma! Her zaman session["peer_subject"] üzerinden al.
+    recipient = session["peer_subject"]
+    
+    # store'dan kayıtları çek
+    rows = store.list_pending_for(db_conn, recipient)
+    
+    pending_list = []
+    for row in rows:
+        file_id = row["file_id"]
+        # Diskteki boyutunu bul
+        try:
+            size = file_blob_path_for(server_state, file_id).stat().st_size
+        except OSError:
+            size = 0
+            
+        # KURAL: Yanıt dönmeden önce satırlardaki hassas/büyük BLOB verilerini (wrapped_key, sender_signature vb.) KESİNLİKLE sil.
+        pending_list.append({
+            "file_id": file_id,
+            "sender_id": row["sender_id"],
+            "upload_timestamp": row["upload_timestamp"],
+            "expiration": row["expiration"],
+            "size": size
+        })
+        
+    send_message(sock, make_envelope("PENDING_LIST", {"files": pending_list}))
+    logger.info("list pending fulfilled recipient=%s count=%d", recipient, len(pending_list))
+
+
+# ---------------------------------------------------------------------------
 # Connection driver
 # ---------------------------------------------------------------------------
 
@@ -412,6 +450,13 @@ def serve_connection(sock, addr, server_state):
                 _handle_download_request(
                     sock,
                     envelope,
+                    db_conn,
+                    session,
+                    server_state,
+                )
+            elif msg_type == "LIST_PENDING":
+                _handle_list_pending(
+                    sock,
                     db_conn,
                     session,
                     server_state,

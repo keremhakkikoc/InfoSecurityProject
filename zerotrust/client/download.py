@@ -58,7 +58,7 @@ def _download_path(username: str, file_id: str) -> Path:
 
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path = path.with_suffix(".tmp")
     try:
         with tmp_path.open("wb") as f:
             f.write(data)
@@ -159,4 +159,26 @@ def download_file(session: dict[str, Any], file_id: str) -> Path:
     return output_path
 
 
-__all__ = ["download_file"]
+def list_pending(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Send LIST_PENDING and return the parsed PENDING_LIST payload."""
+    sock = session.get("sock")
+    if sock is None:
+        raise ProtocolError("live client session is required")
+        
+    send_message(sock, make_envelope("LIST_PENDING", {}))
+    
+    envelope = validate_envelope(recv_message(sock))
+    if envelope["type"] == "ERROR":
+        code = envelope["payload"].get("code", "ERROR")
+        raise ProtocolError(str(code))
+    if envelope["type"] != "PENDING_LIST":
+        raise ProtocolError(f"expected PENDING_LIST, got {envelope['type']!r}")
+        
+    files = envelope["payload"].get("files")
+    if not isinstance(files, list):
+        raise ProtocolError("malformed PENDING_LIST response")
+        
+    return files
+
+
+__all__ = ["download_file", "list_pending"]
