@@ -289,6 +289,52 @@ def _handle_upload_request(
 # DOWNLOAD_REQUEST
 # ---------------------------------------------------------------------------
 
+def _authorise_download(db_conn, session: dict[str, Any], file_id: str) -> tuple[bool, str, dict[str, Any] | None]:
+    """Chokepoint for download access control.
+    
+    Returns (success, error_code, row).
+    If success is True, error_code is "".
+    If success is False, error_code is the error to return to the client.
+    """
+    file_record = store.get_file(db_conn, file_id)
+    if not file_record:
+        logger.warning("Download denied (NOT_FOUND): file=%s requester=%s reason=file_not_in_db", file_id, session["peer_subject"])
+        return False, "NOT_FOUND", None
+
+    # Authorisation: KURAL - Tek gerçek kaynak session["peer_subject"]
+    if file_record["recipient_id"] != session["peer_subject"]:
+        logger.warning("Download denied (NOT_AUTHORIZED): file=%s requester=%s reason=recipient_mismatch expected=%s", 
+                       file_id, session["peer_subject"], file_record["recipient_id"])
+        return False, "AUTH_FAILED", None
+
+    # Expiration: Fırsatçı (Opportunistic) güncelleme
+    if file_record["expiration"] <= int(time.time()):
+        if file_record["status"] == "pending":
+            store.mark_status(db_conn, file_id, "expired")
+            # Bellek uzerindeki statusu de guncelle ki asagidaki durumlara dusmesin
+            file_record = dict(file_record)
+            file_record["status"] = "expired"
+        logger.warning("Download denied (EXPIRED): file=%s requester=%s reason=past_expiration", file_id, session["peer_subject"])
+        return False, "EXPIRED", None
+
+    # Status Kontrolü
+    status = file_record["status"]
+    if status == "pending":
+        return True, "", file_record
+    elif status == "expired":
+        logger.warning("Download denied (EXPIRED): file=%s requester=%s reason=status_expired", file_id, session["peer_subject"])
+        return False, "EXPIRED", None
+    elif status == "revoked":
+        logger.warning("Download denied (REVOKED): file=%s requester=%s reason=status_revoked", file_id, session["peer_subject"])
+        return False, "REVOKED", None
+    elif status == "downloaded":
+        logger.warning("Download denied (ALREADY_DOWNLOADED): file=%s requester=%s reason=status_downloaded", file_id, session["peer_subject"])
+        return False, "ALREADY_DOWNLOADED", None
+    
+    logger.warning("Download denied (INTERNAL_ERROR): file=%s requester=%s reason=unknown_status status=%s", file_id, session["peer_subject"], status)
+    return False, "INTERNAL_ERROR", None
+
+
 
 def _handle_download_request(
     sock,
@@ -304,25 +350,10 @@ def _handle_download_request(
         _send_error(sock, "MALFORMED")
         return
 
-    # Erişim Kontrolü (Access Control)
-    file_record = store.get_file(db_conn, file_id)
-    if not file_record:
-        _send_error(sock, "NOT_FOUND")
-        return
-
-    # KURAL: Eğer veritabanındaki recipient_id, oturumdaki session["peer_subject"] 
-    # ile EŞLEŞMİYORSA anında AUTH_FAILED dön (Yetkisiz erişim engeli).
-    if file_record["recipient_id"] != session["peer_subject"]:
-        logger.warning("Unauthorized download attempt for %s by %s", file_id, session["peer_subject"])
-        _send_error(sock, "AUTH_FAILED")
-        return
-
-    if file_record["status"] != "pending":
-        _send_error(sock, "NOT_FOUND")
-        return
-
-    if file_record["expiration"] < int(time.time()):
-        _send_error(sock, "EXPIRED")
+    # Erişim Kontrolü (Access Control) chokepoint çağrısı
+    success, err_code, file_record = _authorise_download(db_conn, session, file_id)
+    if not success:
+        _send_error(sock, err_code)
         return
 
     # Diskteki ciphertext'i oku
