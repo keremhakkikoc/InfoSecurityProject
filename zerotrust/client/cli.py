@@ -130,8 +130,39 @@ def cmd_upload(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_list(args: argparse.Namespace) -> int:  # pragma: no cover - placeholder
-    return _not_implemented("list")
+def cmd_list(args: argparse.Namespace) -> int:
+    """Open a session and print pending inbox metadata."""
+    password = _resolve_password(args.password)
+    from .download import list_pending
+    try:
+        with connected_session(args.user, password) as session:
+            files = list_pending(session)
+    except ClientAssetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (ConnectionRefusedError, TimeoutError) as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except ProtocolError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (AuthError, CryptoError, ZeroTrustError):
+        print(AUTH_FAILED, file=sys.stderr)
+        return 1
+
+    if not files:
+        print("No pending files.")
+        return 0
+
+    for item in files:
+        print(
+            "file_id={file_id} sender={sender_id} "
+            "size={size} expires={expiration}".format(**item)
+        )
+    return 0
 
 
 def cmd_download(args: argparse.Namespace) -> int:

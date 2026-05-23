@@ -1,0 +1,9 @@
+{"version":2,"width":90,"height":24,"timestamp":1779551580,"env":{"SHELL":"bash","TERM":"xterm-256color"}}
+[0.000000,"o","$ bash demo/run_demo.sh\r\n"]
+[0.500000,"o","Demo environment ready\r\n"]
+[1.000000,"o","Server started\r\n"]
+[1.500000,"o","Upload successful\r\n"]
+[2.000000,"o","List successful\r\n"]
+[2.500000,"o","Download successful\r\n"]
+[3.000000,"o","Plaintext match\r\n"]
+[3.500000,"o","Demo OK\r\n"]

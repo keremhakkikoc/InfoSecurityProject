@@ -159,4 +159,27 @@ def download_file(session: dict[str, Any], file_id: str) -> Path:
     return output_path
 
 
-__all__ = ["download_file"]
+def list_pending(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return pending, non-expired inbox metadata for the session user."""
+    sock = session.get("sock")
+    if sock is None:
+        raise ProtocolError("live client session is required")
+
+    send_message(sock, make_envelope("LIST_PENDING", {}))
+    envelope = validate_envelope(recv_message(sock))
+    if envelope["type"] == "ERROR":
+        code = envelope["payload"].get("code", "ERROR")
+        raise ProtocolError(str(code))
+    if envelope["type"] != "PENDING_LIST":
+        raise ProtocolError(f"expected PENDING_LIST, got {envelope['type']!r}")
+
+    files = envelope["payload"].get("files")
+    if not isinstance(files, list):
+        raise ProtocolError("malformed PENDING_LIST")
+    for item in files:
+        if not isinstance(item, dict):
+            raise ProtocolError("malformed PENDING_LIST")
+    return files
+
+
+__all__ = ["download_file", "list_pending"]

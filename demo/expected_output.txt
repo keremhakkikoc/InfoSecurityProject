@@ -1,0 +1,7 @@
+Demo environment ready
+Server started
+Upload successful
+List successful
+Download successful
+Plaintext match
+Demo OK

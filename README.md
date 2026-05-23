@@ -235,6 +235,29 @@ pytest zerotrust/tests/test_server_upload.py -k tampered
 # → tampered ciphertext → AUTH_FAILED, no disk write, no row
 ```
 
+## Section 5 — Reproducible Demo
+
+The grading demo is scripted in `demo/run_demo.sh`, so a fresh clone can prove
+the end-to-end flow without manual setup:
+
+```bash
+make install
+bash demo/run_demo.sh
+```
+
+The script cleans generated state, installs runtime requirements, bootstraps
+the CA, issues `server`, `alice`, and `bob`, starts the server in the
+background, runs Alice's upload, runs Bob's list and download, and asserts the
+downloaded plaintext matches `demo/sample_files/report.txt`. It also diffs its
+stable transcript against `demo/expected_output.txt`; dynamic UUIDs and
+expiration timestamps are checked internally rather than printed.
+
+Captured successful run:
+
+![Successful demo run](demo/screenshot.png)
+
+The same run is also stored as `demo/demo.cast` for offline terminal playback.
+
 ## Frozen Cryptographic Choices
 
 | Purpose | Algorithm |

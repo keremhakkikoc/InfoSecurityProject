@@ -290,6 +290,37 @@ def _handle_upload_request(
 # ---------------------------------------------------------------------------
 
 
+def _public_pending_row(row: dict[str, Any], server_state: dict[str, Any]) -> dict[str, Any]:
+    """Return metadata-only listing fields; never include key/signature blobs."""
+    blob_path = file_blob_path_for(server_state, row["file_id"])
+    try:
+        size = blob_path.stat().st_size
+    except OSError:
+        size = 0
+    return {
+        "file_id": row["file_id"],
+        "sender_id": row["sender_id"],
+        "upload_timestamp": row["upload_timestamp"],
+        "expiration": row["expiration"],
+        "size": size,
+    }
+
+
+def _handle_list_pending(
+    sock,
+    db_conn,
+    session: dict[str, Any],
+    server_state: dict[str, Any],
+) -> None:
+    recipient = session.get("peer_subject")
+    if not isinstance(recipient, str):
+        _send_error(sock, "NOT_FOUND")
+        return
+    rows = store.list_pending_for(db_conn, recipient)
+    files = [_public_pending_row(row, server_state) for row in rows]
+    send_message(sock, make_envelope("PENDING_LIST", {"files": files}))
+
+
 def _handle_download_request(
     sock,
     envelope: dict[str, Any],
@@ -407,6 +438,13 @@ def serve_connection(sock, addr, server_state):
                     session,
                     server_state,
                     ca_pubkey_pem,
+                )
+            elif msg_type == "LIST_PENDING":
+                _handle_list_pending(
+                    sock,
+                    db_conn,
+                    session,
+                    server_state,
                 )
             elif msg_type == "DOWNLOAD_REQUEST":
                 _handle_download_request(
