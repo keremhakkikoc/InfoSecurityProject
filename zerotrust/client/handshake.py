@@ -140,7 +140,13 @@ def perform_client_handshake(
     send_message(sock, auth_resp)
 
     # --- Step 6: receive SESSION_OK and verify server PoP --------------
-    session_ok = validate_envelope(recv_message(sock))
+    try:
+        session_ok = validate_envelope(recv_message(sock))
+    except (OSError, ProtocolError) as exc:
+        # Some platforms surface a server-side auth abort as a TCP reset
+        # instead of a framed ERROR. The caller still needs a clean auth-class
+        # failure and no key material.
+        raise AuthError("handshake failed") from exc
     if session_ok["type"] != "SESSION_OK":
         # Could be ERROR (server rejected our PoP).
         raise AuthError(f"expected SESSION_OK, got {session_ok['type']!r}")
