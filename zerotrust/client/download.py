@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from ..ca.cert import verify_certificate
+from ..common.canonical import canonical_json
+from ..common.crypto_primitives import rsa_sign
 from ..common.exceptions import AuthError, CryptoError, ProtocolError
 from ..common.file_crypto import decrypt_file_blob
 from ..common.key_wrap import unwrap_aes_key
@@ -196,6 +198,31 @@ def download_file(session: dict[str, Any], file_id: str) -> Path:
         raise ProtocolError(f"expected DOWNLOAD_RESPONSE, got {envelope['type']!r}")
 
     plaintext = verify_and_decrypt_download(session, envelope["payload"], file_id)
+
+    # Issue #26: Send DOWNLOAD_ACK now that we have verified and decrypted the payload.
+    private_pem = session.get("client_priv_pem")
+    password = session.get("client_password")
+    
+    import time
+    ts = int(time.time())
+    canonical = canonical_json({"file_id": file_id, "status": "received", "timestamp": ts})
+    signature = rsa_sign(private_pem, password, canonical)
+    
+    ack_payload = {
+        "file_id": file_id,
+        "timestamp": ts,
+        "signature": base64.b64encode(signature).decode("ascii"),
+    }
+    send_message(sock, make_envelope("DOWNLOAD_ACK", ack_payload))
+    
+    # Receive ACK_OK or STALE (on replay). Either way, we successfully decrypted
+    # the file, so we write the plaintext to disk.
+    ack_reply = validate_envelope(recv_message(sock))
+    if ack_reply["type"] == "ERROR":
+        # We tolerate STALE/REPLAY and still write to disk.
+        # If the server rejected it for other reasons (e.g. AUTH_FAILED), we still
+        # have the verified plaintext locally.
+        pass
 
     output_path = _download_path(username, file_id)
     _atomic_write(output_path, plaintext)

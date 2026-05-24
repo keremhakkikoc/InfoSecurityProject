@@ -776,14 +776,7 @@ def _handle_download_ack(
         _send_error(sock, "AUTH_FAILED")
         return
 
-    try:
-        with db_conn:
-            db_conn.execute(
-                "INSERT INTO acks (file_id, ack_signature, ack_timestamp) VALUES (?, ?, ?)",
-                (file_id, signature, ts_field)
-            )
-    except sqlite3.IntegrityError:
-        pass  # idempotent on file_id PK
+    store.insert_ack(db_conn, file_id, signature, ts_field)
 
     try:
         store.mark_status(db_conn, file_id, "downloaded")
