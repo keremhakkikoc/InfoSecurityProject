@@ -32,6 +32,12 @@ from typing import Any
 
 from ..ca.cert import verify_certificate
 from ..common.exceptions import AuthError, ProtocolError
+from ..common.logger import (
+    audit_error,
+    audit_info,
+    audit_warning,
+    fingerprint,
+)
 from ..common.origin import verify_origin_struct
 from ..common.protocol import (
     make_envelope,
@@ -48,6 +54,30 @@ from .storage_layout import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _cert_fp(cert: dict[str, Any] | None) -> str:
+    """Return the 16-hex fingerprint of *cert*'s public key, or ``-``.
+
+    Defensive: a malformed cert dict (missing key, non-string PEM) must
+    NEVER abort an audit log call. Audit logging is best-effort by design.
+    """
+    if not isinstance(cert, dict):
+        return "-"
+    pem = cert.get("public_key_pem")
+    if not isinstance(pem, str):
+        return "-"
+    try:
+        return fingerprint(pem.encode("ascii"))
+    except UnicodeEncodeError:
+        return "-"
+
+
+def _request_id(envelope: dict[str, Any] | None) -> str:
+    if not isinstance(envelope, dict):
+        return "-"
+    rid = envelope.get("request_id")
+    return rid if isinstance(rid, str) else "-"
 
 _DEMO_SERVER_PASSWORD = b"demo-password"
 
@@ -138,18 +168,38 @@ def _load_verified_pubkey_cert(
 
 def _handle_get_pubkey(
     sock,
-    payload: dict[str, Any],
+    envelope: dict[str, Any],
     server_state: dict[str, Any],
     ca_pubkey_pem: bytes,
+    session: dict[str, Any],
 ) -> None:
-    cert = _load_verified_pubkey_cert(
-        payload.get("username"),
-        server_state,
-        ca_pubkey_pem,
-    )
+    payload = envelope["payload"]
+    username = payload.get("username")
+    request_id = _request_id(envelope)
+    requester = session.get("peer_subject")
+    cert = _load_verified_pubkey_cert(username, server_state, ca_pubkey_pem)
     if cert is None:
+        # AI.md §4.36: client sees a generic NOT_FOUND; the audit log keeps
+        # the real reason (unknown username vs. invalid cert vs. missing file)
+        # collapsed into a single event but with the requested username so
+        # the operator can correlate.
+        audit_warning(
+            logger,
+            "pubkey_lookup_miss",
+            requester=requester,
+            requested=username,
+            request_id=request_id,
+        )
         _send_error(sock, "NOT_FOUND")
         return
+    audit_info(
+        logger,
+        "pubkey_lookup_ok",
+        requester=requester,
+        requested=username,
+        fp=_cert_fp(cert),
+        request_id=request_id,
+    )
     send_message(sock, make_envelope("PUBKEY_RESPONSE", {"cert": cert}))
 
 
@@ -159,6 +209,7 @@ def _handle_get_pubkey(
 
 def _handle_list_pending(
     sock,
+    envelope: dict[str, Any],
     db_conn,
     session: dict[str, Any],
     server_state: dict[str, Any],
@@ -183,6 +234,13 @@ def _handle_list_pending(
             }
         )
     send_message(sock, make_envelope("PENDING_LIST", {"files": files}))
+    audit_info(
+        logger,
+        "list_pending",
+        recipient=recipient,
+        count=len(files),
+        request_id=_request_id(envelope),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -212,19 +270,49 @@ def _handle_upload_request(
     server_state: dict[str, Any],
     ca_pubkey_pem: bytes,
 ) -> None:
+    request_id = _request_id(envelope)
+    sender = session.get("peer_subject")
+    sender_fp = _cert_fp(session.get("peer_cert"))
+
     # 1. Replay protection (cheap — do FIRST to avoid expensive DoS via crypto).
     try:
         envelope_nonce = base64.b64decode(envelope["nonce"], validate=True)
     except Exception:  # noqa: BLE001
+        audit_error(
+            logger,
+            "upload_reject",
+            reason="malformed_envelope_nonce",
+            sender=sender,
+            request_id=request_id,
+        )
         _send_error(sock, "MALFORMED")
         return
+    # Log only the nonce fingerprint — never the raw bytes.
+    envelope_nonce_fp = fingerprint(envelope_nonce)
     if not replay.check_and_record(db_conn, envelope_nonce, envelope["timestamp"]):
+        # check_and_record collapses "stale window" and "nonce already seen"
+        # into one False; either is a replay-class failure for audit purposes.
+        audit_warning(
+            logger,
+            "replay_reject",
+            sender=sender,
+            request_id=request_id,
+            nonce_fp=envelope_nonce_fp,
+            envelope_timestamp=envelope.get("timestamp"),
+        )
         _send_error(sock, "STALE")
         return
 
     # 2. Sender identity comes from the handshake, NOT from any payload field.
-    sender = session["peer_subject"]
     if not verify_certificate(session["peer_cert"], ca_pubkey_pem, expected_subject=sender):
+        audit_warning(
+            logger,
+            "auth_fail",
+            reason="sender_cert_invalid",
+            sender=sender,
+            fp=sender_fp,
+            request_id=request_id,
+        )
         _send_error(sock, "AUTH_FAILED")
         return
 
@@ -246,7 +334,17 @@ def _handle_upload_request(
         aes_nonce = _decode_b64_field(payload, "nonce")
         wrapped_key = _decode_b64_field(payload, "wrapped_key")
         signature = _decode_b64_field(payload, "signature")
-    except (KeyError, ValueError, ProtocolError):
+    except (KeyError, ValueError, ProtocolError) as exc:
+        # Log the exception *class* only, never str(exc) — a malicious peer
+        # could try to smuggle bytes into the message text.
+        audit_warning(
+            logger,
+            "upload_reject",
+            reason="malformed_payload",
+            sender=sender,
+            request_id=request_id,
+            err_type=type(exc).__name__,
+        )
         _send_error(sock, "MALFORMED")
         return
 
@@ -266,12 +364,35 @@ def _handle_upload_request(
         timestamp=timestamp,
         expiration=expiration,
     ):
-        logger.warning("origin verify failed sender=%s file_id=%s", sender, file_id)
+        # Signature failures are ERROR per ARCHITECTURE.md §9 severity matrix.
+        # We log the ciphertext fingerprint (first 16 hex of sha256) plus a
+        # short signature-prefix (first 8 hex of sha256(signature)) for
+        # correlation — never the full signature bytes.
+        audit_error(
+            logger,
+            "origin_sig_fail",
+            sender=sender,
+            recipient=recipient,
+            file_id=file_id,
+            sender_fp=sender_fp,
+            ct_fp=ciphertext_sha256[:16],
+            sig_prefix=hashlib.sha256(signature).hexdigest()[:8],
+            request_id=request_id,
+        )
         _send_error(sock, "AUTH_FAILED")
         return
 
     # 5. Recipient must exist in the pubkey directory.
     if _load_verified_pubkey_cert(recipient, server_state, ca_pubkey_pem) is None:
+        audit_warning(
+            logger,
+            "upload_reject",
+            reason="unknown_recipient",
+            sender=sender,
+            recipient=recipient,
+            file_id=file_id,
+            request_id=request_id,
+        )
         _send_error(sock, "NOT_FOUND")
         return
 
@@ -302,8 +423,19 @@ def _handle_upload_request(
                 "sender_cert_json": json.dumps(session["peer_cert"], sort_keys=True),
             },
         )
-    except OSError:
-        logger.exception("upload write failed sender=%s file_id=%s", sender, file_id)
+    except OSError as exc:
+        # Disk failure: ERROR per ARCHITECTURE.md §9. We deliberately do NOT
+        # log the exception path (could be /etc/.../server.pem) — only the
+        # exception class. Path leaks via str(exc) are a real pitfall here.
+        audit_error(
+            logger,
+            "upload_internal_error",
+            sender=sender,
+            recipient=recipient,
+            file_id=file_id,
+            request_id=request_id,
+            err_type=type(exc).__name__,
+        )
         _send_error(sock, "INTERNAL_ERROR")
         return
 
@@ -311,9 +443,15 @@ def _handle_upload_request(
         "file_id": file_id,
         "expiration": expiration,
     }))
-    logger.info(
-        "upload accepted file=%s sender=%s recipient=%s",
-        file_id, sender, recipient,
+    audit_info(
+        logger,
+        "upload_accept",
+        file_id=file_id,
+        sender=sender,
+        recipient=recipient,
+        sender_fp=sender_fp,
+        ct_fp=ciphertext_sha256[:16],
+        request_id=request_id,
     )
 
 
@@ -321,22 +459,49 @@ def _handle_upload_request(
 # DOWNLOAD_REQUEST
 # ---------------------------------------------------------------------------
 
-def _authorise_download(db_conn, session: dict[str, Any], file_id: str) -> tuple[bool, str, dict[str, Any] | None]:
+def _authorise_download(
+    db_conn,
+    session: dict[str, Any],
+    file_id: str,
+    *,
+    request_id: str = "-",
+) -> tuple[bool, str, dict[str, Any] | None]:
     """Chokepoint for download access control.
-    
+
     Returns (success, error_code, row).
     If success is True, error_code is "".
     If success is False, error_code is the error to return to the client.
+
+    Every fail-closed path emits a structured WARNING with the *real*
+    reason. The client still sees an opaque code per AI.md §4.36; the
+    audit log is allowed to be specific so the operator can debug.
     """
+    requester = session.get("peer_subject")
     file_record = store.get_file(db_conn, file_id)
     if not file_record:
-        logger.warning("Download denied (NOT_FOUND): file=%s requester=%s reason=file_not_in_db", file_id, session["peer_subject"])
+        audit_warning(
+            logger,
+            "download_deny",
+            reason="file_not_in_db",
+            file_id=file_id,
+            requester=requester,
+            client_code="NOT_FOUND",
+            request_id=request_id,
+        )
         return False, "NOT_FOUND", None
 
     # Authorisation: KURAL - Tek gerçek kaynak session["peer_subject"]
-    if file_record["recipient_id"] != session["peer_subject"]:
-        logger.warning("Download denied (NOT_AUTHORIZED): file=%s requester=%s reason=recipient_mismatch expected=%s", 
-                       file_id, session["peer_subject"], file_record["recipient_id"])
+    if file_record["recipient_id"] != requester:
+        audit_warning(
+            logger,
+            "unauthorized_download",
+            reason="recipient_mismatch",
+            file_id=file_id,
+            requester=requester,
+            expected=file_record["recipient_id"],
+            client_code="AUTH_FAILED",
+            request_id=request_id,
+        )
         return False, "AUTH_FAILED", None
 
     # Expiration: Fırsatçı (Opportunistic) güncelleme
@@ -346,24 +511,65 @@ def _authorise_download(db_conn, session: dict[str, Any], file_id: str) -> tuple
             # Bellek uzerindeki statusu de guncelle ki asagidaki durumlara dusmesin
             file_record = dict(file_record)
             file_record["status"] = "expired"
-        logger.warning("Download denied (EXPIRED): file=%s requester=%s reason=past_expiration", file_id, session["peer_subject"])
+        audit_warning(
+            logger,
+            "download_deny",
+            reason="past_expiration",
+            file_id=file_id,
+            requester=requester,
+            client_code="EXPIRED",
+            request_id=request_id,
+        )
         return False, "EXPIRED", None
 
     # Status Kontrolü
     status = file_record["status"]
     if status == "pending":
         return True, "", file_record
-    elif status == "expired":
-        logger.warning("Download denied (EXPIRED): file=%s requester=%s reason=status_expired", file_id, session["peer_subject"])
+    if status == "expired":
+        audit_warning(
+            logger,
+            "download_deny",
+            reason="status_expired",
+            file_id=file_id,
+            requester=requester,
+            client_code="EXPIRED",
+            request_id=request_id,
+        )
         return False, "EXPIRED", None
-    elif status == "revoked":
-        logger.warning("Download denied (REVOKED): file=%s requester=%s reason=status_revoked", file_id, session["peer_subject"])
+    if status == "revoked":
+        audit_warning(
+            logger,
+            "download_deny",
+            reason="status_revoked",
+            file_id=file_id,
+            requester=requester,
+            client_code="REVOKED",
+            request_id=request_id,
+        )
         return False, "REVOKED", None
-    elif status == "downloaded":
-        logger.warning("Download denied (ALREADY_DOWNLOADED): file=%s requester=%s reason=status_downloaded", file_id, session["peer_subject"])
+    if status == "downloaded":
+        audit_warning(
+            logger,
+            "download_deny",
+            reason="status_downloaded",
+            file_id=file_id,
+            requester=requester,
+            client_code="ALREADY_DOWNLOADED",
+            request_id=request_id,
+        )
         return False, "ALREADY_DOWNLOADED", None
-    
-    logger.warning("Download denied (INTERNAL_ERROR): file=%s requester=%s reason=unknown_status status=%s", file_id, session["peer_subject"], status)
+
+    audit_error(
+        logger,
+        "download_deny",
+        reason="unknown_status",
+        status=status,
+        file_id=file_id,
+        requester=requester,
+        client_code="INTERNAL_ERROR",
+        request_id=request_id,
+    )
     return False, "INTERNAL_ERROR", None
 
 
@@ -376,14 +582,25 @@ def _handle_download_request(
     server_state: dict[str, Any],
 ) -> None:
     payload = envelope["payload"]
+    request_id = _request_id(envelope)
+    requester = session.get("peer_subject")
     try:
         file_id = payload["file_id"]
     except KeyError:
+        audit_warning(
+            logger,
+            "download_reject",
+            reason="malformed_payload",
+            requester=requester,
+            request_id=request_id,
+        )
         _send_error(sock, "MALFORMED")
         return
 
     # Erişim Kontrolü (Access Control) chokepoint çağrısı
-    success, err_code, file_record = _authorise_download(db_conn, session, file_id)
+    success, err_code, file_record = _authorise_download(
+        db_conn, session, file_id, request_id=request_id,
+    )
     if not success:
         _send_error(sock, err_code)
         return
@@ -391,14 +608,30 @@ def _handle_download_request(
     # Diskteki ciphertext'i oku
     final_path = file_blob_path_for(server_state, file_id)
     if not final_path.is_file():
-        logger.error("File %s metadata exists but blob is missing!", file_id)
+        # Path is server-internal — never log final_path itself.
+        audit_error(
+            logger,
+            "download_internal_error",
+            reason="blob_missing",
+            file_id=file_id,
+            requester=requester,
+            request_id=request_id,
+        )
         _send_error(sock, "INTERNAL_ERROR")
         return
 
     try:
         ciphertext = final_path.read_bytes()
-    except OSError:
-        logger.exception("Failed to read blob for %s", file_id)
+    except OSError as exc:
+        audit_error(
+            logger,
+            "download_internal_error",
+            reason="blob_read_failed",
+            file_id=file_id,
+            requester=requester,
+            err_type=type(exc).__name__,
+            request_id=request_id,
+        )
         _send_error(sock, "INTERNAL_ERROR")
         return
 
@@ -416,7 +649,15 @@ def _handle_download_request(
     }
 
     send_message(sock, make_envelope("DOWNLOAD_RESPONSE", response_payload))
-    logger.info("download fulfilled file=%s recipient=%s", file_id, session["peer_subject"])
+    audit_info(
+        logger,
+        "download_served",
+        file_id=file_id,
+        recipient=requester,
+        sender=file_record["sender_id"],
+        ct_fp=fingerprint(ciphertext),
+        request_id=request_id,
+    )
 
 # ---------------------------------------------------------------------------
 # Connection driver
@@ -429,9 +670,11 @@ def serve_connection(sock, addr, server_state):
     sharing) and closes it in ``finally`` so a bad client never leaks a
     DB handle.
     """
-    logger.info("[*] connection accepted: %s", addr)
+    peer = f"{addr[0]}:{addr[1]}" if isinstance(addr, tuple) and len(addr) >= 2 else str(addr)
+    audit_info(logger, "connection_open", peer=peer)
 
     db_conn = None
+    session: dict[str, Any] | None = None
     try:
         server_cert, private_pem, password, ca_pubkey_pem = _load_server_assets(
             server_state
@@ -460,10 +703,10 @@ def serve_connection(sock, addr, server_state):
             msg_type = envelope["type"]
             if msg_type == "GET_PUBKEY":
                 _handle_get_pubkey(
-                    sock, envelope["payload"], server_state, ca_pubkey_pem
+                    sock, envelope, server_state, ca_pubkey_pem, session,
                 )
             elif msg_type == "LIST_PENDING":
-                _handle_list_pending(sock, db_conn, session, server_state)
+                _handle_list_pending(sock, envelope, db_conn, session, server_state)
             elif msg_type == "UPLOAD_REQUEST":
                 _handle_upload_request(
                     sock,
@@ -482,15 +725,53 @@ def serve_connection(sock, addr, server_state):
                     server_state,
                 )
             else:
+                audit_warning(
+                    logger,
+                    "unknown_message_type",
+                    msg_type=msg_type,
+                    peer=peer,
+                    request_id=_request_id(envelope),
+                    subject=(session or {}).get("peer_subject"),
+                )
                 _send_error(sock, "MALFORMED")
 
-    except (AuthError, ProtocolError, OSError) as exc:
-        # Expected error classes — log at info, NOT exception (no stack trace).
-        logger.info("[-] %s: %s", addr, exc)
-    except Exception:  # noqa: BLE001
-        # Unexpected — log with traceback so we can debug, but DO NOT
-        # crash the worker thread (a bad client must not take the server down).
-        logger.exception("[-] %s: unexpected handler error", addr)
+    except AuthError as exc:
+        # Handshake refused — already audited inside perform_server_handshake.
+        # Record one closing line here for thread-flow correlation.
+        audit_warning(
+            logger,
+            "connection_aborted",
+            peer=peer,
+            err_type=type(exc).__name__,
+        )
+    except ProtocolError as exc:
+        audit_warning(
+            logger,
+            "connection_aborted",
+            peer=peer,
+            err_type=type(exc).__name__,
+            reason="protocol_error",
+        )
+    except OSError as exc:
+        audit_warning(
+            logger,
+            "connection_aborted",
+            peer=peer,
+            err_type=type(exc).__name__,
+            reason="socket_error",
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Unexpected — keep a stack trace via logger.exception so we can
+        # debug, but DO NOT crash the worker thread (a bad client must not
+        # take the server down). The stack trace is allowed at the system
+        # logger; the audit event itself stays redacted.
+        logger.exception("[-] %s: unexpected handler error", peer)
+        audit_error(
+            logger,
+            "handler_internal_error",
+            peer=peer,
+            err_type=type(exc).__name__,
+        )
     finally:
         if db_conn is not None:
             try:
@@ -501,4 +782,4 @@ def serve_connection(sock, addr, server_state):
             sock.close()
         except OSError:
             pass
-        logger.info("[*] connection closed: %s", addr)
+        audit_info(logger, "connection_close", peer=peer)
