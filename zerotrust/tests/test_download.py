@@ -123,7 +123,9 @@ def _make_package(
 
 
 def _session(keys: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    sock = FakeSocket(pack_message(make_envelope("DOWNLOAD_RESPONSE", payload)))
+    response1 = pack_message(make_envelope("DOWNLOAD_RESPONSE", payload))
+    response2 = pack_message(make_envelope("ACK_OK", {"file_id": payload["file_id"]}))
+    sock = FakeSocket(response1 + response2)
     return {
         "sock": sock,
         "username": "bob",
