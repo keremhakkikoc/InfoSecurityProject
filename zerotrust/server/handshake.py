@@ -23,7 +23,12 @@ from ..common.crypto_primitives import (
     rsa_verify,
 )
 from ..common.exceptions import AuthError, CryptoError, ProtocolError
-from ..common.logger import fingerprint, get_logger
+from ..common.logger import (
+    audit_info,
+    audit_warning,
+    fingerprint,
+    get_logger,
+)
 from ..common.protocol import (
     make_envelope,
     pack_message,
@@ -53,10 +58,31 @@ def _send_error(sock: socket.socket, code: str) -> None:
         pass
 
 
-def _fail(sock: socket.socket, log, reason: str, *, exc: Exception | None = None) -> None:
+def _fail(
+    sock: socket.socket,
+    log,
+    reason: str,
+    *,
+    exc: Exception | None = None,
+    peer_subject: str | None = None,
+    peer_fp: str | None = None,
+) -> None:
     """Log the *real* reason server-side, send generic AUTH_FAILED to peer,
-    then raise AuthError so the caller closes the socket."""
-    log.warning("handshake failed: %s", reason)
+    then raise AuthError so the caller closes the socket.
+
+    The audit event uses ``event=handshake_fail`` so the regression test
+    can grep for it deterministically. The *reason* string is a fixed
+    server-side identifier (e.g. ``client_cert_invalid``) — never derived
+    from peer-controlled bytes.
+    """
+    audit_warning(
+        log,
+        "handshake_fail",
+        reason=reason,
+        peer=peer_subject,
+        fp=peer_fp,
+        err_type=type(exc).__name__ if exc is not None else None,
+    )
     _send_error(sock, _GENERIC_AUTH_FAILED)
     raise AuthError(reason) from exc
 
@@ -121,7 +147,13 @@ def perform_server_handshake(
 
     peer_subject = client_cert["subject"]
     client_pubkey_pem = client_cert["public_key_pem"].encode("ascii")
-    log.info("HELLO from %s (fp=%s)", peer_subject, fingerprint(client_pubkey_pem))
+    peer_fp = fingerprint(client_pubkey_pem)
+    audit_info(
+        log,
+        "handshake_hello",
+        peer=peer_subject,
+        fp=peer_fp,
+    )
 
     # --- Step 3: send server HELLO -------------------------------------
     nonce_s = os.urandom(NONCE_BYTES)
@@ -177,7 +209,13 @@ def perform_server_handshake(
         _fail(sock, log, "client signature not valid base64", exc=exc)
 
     if not rsa_verify(client_pubkey_pem, transcript, client_sig):
-        _fail(sock, log, f"client PoP signature invalid for {peer_subject}")
+        _fail(
+            sock,
+            log,
+            "client_pop_signature_invalid",
+            peer_subject=peer_subject,
+            peer_fp=peer_fp,
+        )
 
     # --- Step 7: derive session keys via HKDF --------------------------
     okm = hkdf_derive(
@@ -196,11 +234,12 @@ def perform_server_handshake(
     })
     send_message(sock, session_ok)
 
-    log.info(
-        "session established peer=%s peer_fp=%s transcript_fp=%s",
-        peer_subject,
-        fingerprint(client_pubkey_pem),
-        fingerprint(transcript),
+    audit_info(
+        log,
+        "handshake_ok",
+        peer=peer_subject,
+        fp=peer_fp,
+        transcript_fp=fingerprint(transcript),
     )
 
     # --- Step 9: return the frozen session-state dict ------------------
