@@ -120,6 +120,7 @@ MESSAGE_TYPES = frozenset({
     "DOWNLOAD_REQUEST",
     "DOWNLOAD_RESPONSE",
     "DOWNLOAD_ACK",
+    "ACK_OK",
     "REVOKE_REQUEST",
     "REVOKE_ACK",
     "ERROR",

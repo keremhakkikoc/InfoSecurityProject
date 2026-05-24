@@ -46,6 +46,8 @@ from ..common.protocol import (
     validate_envelope,
 )
 from ..common.revoke import verify_revoke_struct
+from ..common.canonical import canonical_json
+from ..common.crypto_primitives import rsa_verify
 from . import replay, store
 from .handshake import perform_server_handshake
 from .storage_layout import (
@@ -689,6 +691,110 @@ def _handle_download_request(
     )
 
 # ---------------------------------------------------------------------------
+# DOWNLOAD_ACK (issue #25 / bonus)
+# ---------------------------------------------------------------------------
+
+def _handle_download_ack(
+    sock,
+    envelope: dict[str, Any],
+    db_conn,
+    session: dict[str, Any],
+    ca_pubkey_pem: bytes,
+) -> None:
+    request_id = _request_id(envelope)
+    sender = session.get("peer_subject")
+    sender_fp = _cert_fp(session.get("peer_cert"))
+
+    try:
+        envelope_nonce = base64.b64decode(envelope["nonce"], validate=True)
+    except Exception:  # noqa: BLE001
+        audit_error(
+            logger,
+            "ack_reject",
+            reason="malformed_envelope_nonce",
+            sender=sender,
+            request_id=request_id,
+        )
+        _send_error(sock, "MALFORMED")
+        return
+    envelope_nonce_fp = fingerprint(envelope_nonce)
+    if not replay.check_and_record(db_conn, envelope_nonce, envelope["timestamp"]):
+        audit_warning(
+            logger,
+            "replay_reject",
+            scope="ack",
+            sender=sender,
+            request_id=request_id,
+            nonce_fp=envelope_nonce_fp,
+            envelope_timestamp=envelope.get("timestamp"),
+        )
+        _send_error(sock, "STALE")
+        return
+
+    payload = envelope["payload"]
+    try:
+        file_id = payload["file_id"]
+        ts_field = payload["timestamp"]
+        if not isinstance(file_id, str) or str(uuid.UUID(file_id)) != file_id:
+            raise ProtocolError("invalid file_id")
+        if not isinstance(ts_field, int):
+            raise ProtocolError("timestamp must be int")
+        signature = _decode_b64_field(payload, "signature")
+    except (KeyError, ValueError, ProtocolError) as exc:
+        audit_warning(
+            logger,
+            "ack_reject",
+            reason="malformed_payload",
+            sender=sender,
+            request_id=request_id,
+            err_type=type(exc).__name__,
+        )
+        _send_error(sock, "MALFORMED")
+        return
+
+    file_record = store.get_file(db_conn, file_id)
+    if file_record is None:
+        _send_error(sock, "NOT_FOUND")
+        return
+
+    if file_record["recipient_id"] != sender:
+        _send_error(sock, "NOT_AUTHORIZED")
+        return
+
+    if not verify_certificate(session["peer_cert"], ca_pubkey_pem, expected_subject=sender):
+        _send_error(sock, "AUTH_FAILED")
+        return
+
+    try:
+        public_key_pem = session["peer_cert"]["public_key_pem"].encode("ascii")
+        canonical = canonical_json(
+            {"file_id": file_id, "status": "received", "timestamp": ts_field}
+        )
+        if not rsa_verify(public_key_pem, canonical, signature):
+            _send_error(sock, "AUTH_FAILED")
+            return
+    except Exception:  # noqa: BLE001
+        _send_error(sock, "AUTH_FAILED")
+        return
+
+    try:
+        with db_conn:
+            db_conn.execute(
+                "INSERT INTO acks (file_id, ack_signature, ack_timestamp) VALUES (?, ?, ?)",
+                (file_id, signature, ts_field)
+            )
+    except sqlite3.IntegrityError:
+        pass  # idempotent on file_id PK
+
+    try:
+        store.mark_status(db_conn, file_id, "downloaded")
+    except (sqlite3.Error, ValueError):
+        _send_error(sock, "INTERNAL_ERROR")
+        return
+
+    send_message(sock, make_envelope("ACK_OK", {"file_id": file_id}))
+
+# ---------------------------------------------------------------------------
 # REVOKE_REQUEST (issue #24 / bonus)
 # ---------------------------------------------------------------------------
 
@@ -994,6 +1100,14 @@ def serve_connection(sock, addr, server_state):
                     db_conn,
                     session,
                     server_state,
+                )
+            elif msg_type == "DOWNLOAD_ACK":
+                _handle_download_ack(
+                    sock,
+                    envelope,
+                    db_conn,
+                    session,
+                    ca_pubkey_pem,
                 )
             elif msg_type == "REVOKE_REQUEST":
                 _handle_revoke_request(
