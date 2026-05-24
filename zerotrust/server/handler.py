@@ -585,6 +585,34 @@ def _handle_download_request(
     payload = envelope["payload"]
     request_id = _request_id(envelope)
     requester = session.get("peer_subject")
+
+    # 1. Replay protection
+    try:
+        envelope_nonce = base64.b64decode(envelope["nonce"], validate=True)
+    except Exception:  # noqa: BLE001
+        audit_error(
+            logger,
+            "download_reject",
+            reason="malformed_envelope_nonce",
+            requester=requester,
+            request_id=request_id,
+        )
+        _send_error(sock, "MALFORMED")
+        return
+    envelope_nonce_fp = fingerprint(envelope_nonce)
+    if not replay.check_and_record(db_conn, envelope_nonce, envelope["timestamp"]):
+        audit_warning(
+            logger,
+            "replay_reject",
+            scope="download",
+            requester=requester,
+            request_id=request_id,
+            nonce_fp=envelope_nonce_fp,
+            envelope_timestamp=envelope.get("timestamp"),
+        )
+        _send_error(sock, "STALE")
+        return
+
     try:
         file_id = payload["file_id"]
     except KeyError:
