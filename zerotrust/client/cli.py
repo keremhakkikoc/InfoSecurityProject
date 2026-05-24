@@ -158,6 +158,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     for row in rows:
         print(
             f"{row['file_id']} sender={row['sender_id']} "
+            f"size={row.get('ciphertext_size', 'unknown')} "
             f"expires={row['expiration']}"
         )
     return 0
