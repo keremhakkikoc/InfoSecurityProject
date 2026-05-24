@@ -71,19 +71,45 @@ def _atomic_write(path: Path, data: bytes) -> None:
         raise
 
 
-def download_file(session: dict[str, Any], file_id: str) -> Path:
-    """Download, verify, decrypt, and atomically save ``file_id``.
-
-    Returns the path written on success. Any certificate, origin-signature,
-    AAD, unwrap, or decrypt failure raises before the plaintext is written.
-    """
+def list_pending(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the authenticated user's pending-file metadata list."""
     sock = session.get("sock")
+    if sock is None:
+        raise ProtocolError("live client session is required")
+
+    send_message(sock, make_envelope("LIST_PENDING", {}))
+    envelope = validate_envelope(recv_message(sock))
+    if envelope["type"] == "ERROR":
+        code = envelope["payload"].get("code", "ERROR")
+        raise ProtocolError(str(code))
+    if envelope["type"] != "PENDING_LIST":
+        raise ProtocolError(f"expected PENDING_LIST, got {envelope['type']!r}")
+
+    files = envelope["payload"].get("files")
+    if not isinstance(files, list) or not all(
+        isinstance(row, dict) for row in files
+    ):
+        raise ProtocolError("PENDING_LIST files must be a list")
+    return files
+
+
+def verify_and_decrypt_download(
+    session: dict[str, Any],
+    payload: dict[str, Any],
+    file_id: str | None = None,
+) -> bytes:
+    """Verify a ``DOWNLOAD_RESPONSE`` payload and return plaintext bytes.
+
+    This helper intentionally does not write to disk. ``download_file`` calls
+    it before the atomic write so every crypto/auth failure happens before any
+    plaintext lands.
+    """
     username = session.get("username")
     private_pem = session.get("client_priv_pem")
     password = session.get("client_password")
     ca_pubkey_pem = session.get("ca_pubkey_pem")
 
-    if sock is None or not isinstance(username, str):
+    if not isinstance(username, str):
         raise ProtocolError("live client session is required")
     if not isinstance(private_pem, (bytes, bytearray)):
         raise ProtocolError("client private key missing from session")
@@ -92,23 +118,15 @@ def download_file(session: dict[str, Any], file_id: str) -> Path:
     if not isinstance(ca_pubkey_pem, (bytes, bytearray)):
         raise ProtocolError("CA trust anchor missing from session")
 
-    send_message(sock, make_envelope("DOWNLOAD_REQUEST", {"file_id": file_id}))
-
-    envelope = validate_envelope(recv_message(sock))
-    if envelope["type"] == "ERROR":
-        code = envelope["payload"].get("code", "ERROR")
-        raise ProtocolError(str(code))
-    if envelope["type"] != "DOWNLOAD_RESPONSE":
-        raise ProtocolError(f"expected DOWNLOAD_RESPONSE, got {envelope['type']!r}")
-
-    payload = envelope["payload"]
     response_file_id = payload.get("file_id")
     sender = payload.get("sender_id")
     timestamp = payload.get("timestamp")
     expiration = payload.get("expiration")
+    expected_file_id = file_id if file_id is not None else response_file_id
     if (
         not isinstance(response_file_id, str)
-        or not hmac.compare_digest(response_file_id, file_id)
+        or not isinstance(expected_file_id, str)
+        or not hmac.compare_digest(response_file_id, expected_file_id)
         or not isinstance(sender, str)
         or not isinstance(timestamp, int)
         or not isinstance(expiration, int)
@@ -132,7 +150,7 @@ def download_file(session: dict[str, Any], file_id: str) -> Path:
         signature,
         sender=sender,
         recipient=username,
-        file_id=file_id,
+        file_id=expected_file_id,
         ciphertext_sha256=ciphertext_sha256,
         wrapped_key_sha256=wrapped_key_sha256,
         timestamp=timestamp,
@@ -140,7 +158,7 @@ def download_file(session: dict[str, Any], file_id: str) -> Path:
     ):
         raise AuthError("AUTH_FAILED")
 
-    expected_aad = _file_aad(file_id, sender, username)
+    expected_aad = _file_aad(expected_file_id, sender, username)
     if not hmac.compare_digest(sent_aad, expected_aad):
         raise CryptoError("AES-GCM AAD mismatch")
 
@@ -149,14 +167,39 @@ def download_file(session: dict[str, Any], file_id: str) -> Path:
         aes_key,
         aes_nonce,
         ciphertext,
-        file_id,
+        expected_file_id,
         sender,
         username,
     )
+    return plaintext
+
+
+def download_file(session: dict[str, Any], file_id: str) -> Path:
+    """Download, verify, decrypt, and atomically save ``file_id``.
+
+    Returns the path written on success. Any certificate, origin-signature,
+    AAD, unwrap, or decrypt failure raises before the plaintext is written.
+    """
+    sock = session.get("sock")
+    username = session.get("username")
+
+    if sock is None or not isinstance(username, str):
+        raise ProtocolError("live client session is required")
+
+    send_message(sock, make_envelope("DOWNLOAD_REQUEST", {"file_id": file_id}))
+
+    envelope = validate_envelope(recv_message(sock))
+    if envelope["type"] == "ERROR":
+        code = envelope["payload"].get("code", "ERROR")
+        raise ProtocolError(str(code))
+    if envelope["type"] != "DOWNLOAD_RESPONSE":
+        raise ProtocolError(f"expected DOWNLOAD_RESPONSE, got {envelope['type']!r}")
+
+    plaintext = verify_and_decrypt_download(session, envelope["payload"], file_id)
 
     output_path = _download_path(username, file_id)
     _atomic_write(output_path, plaintext)
     return output_path
 
 
-__all__ = ["download_file"]
+__all__ = ["download_file", "list_pending", "verify_and_decrypt_download"]
