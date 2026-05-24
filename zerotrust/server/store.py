@@ -141,3 +141,13 @@ def mark_expired(conn: sqlite3.Connection, *, now: int | None = None) -> int:
     with conn:
         cur = conn.execute(query, (cutoff,))
         return cur.rowcount
+
+def insert_ack(conn: sqlite3.Connection, file_id: str, ack_signature: bytes, ack_timestamp: int) -> None:
+    """Insert a DOWNLOAD_ACK record. Idempotent on file_id PK."""
+    query = "INSERT INTO acks (file_id, ack_signature, ack_timestamp) VALUES (?, ?, ?)"
+    try:
+        with conn:
+            conn.execute(query, (file_id, ack_signature, ack_timestamp))
+    except sqlite3.IntegrityError:
+        pass  # Idempotent: already inserted.
+

@@ -110,3 +110,25 @@ def test_replay_ack(env):
             reply2 = validate_envelope(recv_message(session["sock"]))
             assert reply2["type"] == "ERROR"
             assert reply2["payload"]["code"] in ("STALE", "REPLAY")
+
+def test_wrong_recipient_ack(env):
+    with _running_server(env) as port:
+        file_id = _upload_one(env, port)
+        
+        with _session_socket(env, port, user="mallory") as session:
+            # Mallory tries to ACK an Alice->Bob file using Mallory's key
+            reply, _ = _send_ack(env, session, file_id, env.mallory_priv, MALLORY_PASSWORD)
+            assert reply["type"] == "ERROR"
+            assert reply["payload"]["code"] == "NOT_AUTHORIZED"
+            assert _row_status(env, file_id) == "pending"
+
+def test_ack_without_prior_download(env):
+    with _running_server(env) as port:
+        file_id = _upload_one(env, port)
+        
+        # Bob never downloaded the file, but sends an ACK anyway.
+        # This is tolerated as it enforces the state machine.
+        with _session_socket(env, port, user="bob") as session:
+            reply, _ = _send_ack(env, session, file_id, env.bob_priv, BOB_PASSWORD)
+            assert reply["type"] == "ACK_OK"
+            assert _row_status(env, file_id) == "downloaded"
