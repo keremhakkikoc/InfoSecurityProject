@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from ..ca.cert import verify_certificate
+from ..common.canonical import canonical_json
+from ..common.crypto_primitives import rsa_verify
 from ..common.exceptions import AuthError, ProtocolError
 from ..common.logger import (
     audit_error,
@@ -46,8 +48,6 @@ from ..common.protocol import (
     validate_envelope,
 )
 from ..common.revoke import verify_revoke_struct
-from ..common.canonical import canonical_json
-from ..common.crypto_primitives import rsa_verify
 from . import replay, store
 from .handshake import perform_server_handshake
 from .storage_layout import (
@@ -703,7 +703,6 @@ def _handle_download_ack(
 ) -> None:
     request_id = _request_id(envelope)
     sender = session.get("peer_subject")
-    sender_fp = _cert_fp(session.get("peer_cert"))
 
     try:
         envelope_nonce = base64.b64decode(envelope["nonce"], validate=True)
