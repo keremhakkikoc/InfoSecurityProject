@@ -249,7 +249,58 @@ pytest zerotrust/tests/test_server_upload.py -k tampered
 
 Any change requires updating `ARCHITECTURE.md` §2 and notifying the team.
 
-## Security Analysis
+## Section 5 — Secure Retrieval and Access Control
 
-To be written in Phase 3 (issue #22b). The known limitations enumerated in
-`ARCHITECTURE.md` §12 will be discussed there.
+To retrieve a file, the recipient first sends a `LIST_PENDING` envelope to discover the available file IDs, sizes, and expiration times. The server returns a list of files where the recipient matches the authenticated peer subject and the status is still `pending`. The recipient then issues a `DOWNLOAD_REQUEST` for a specific file ID.
+
+The server enforces access control at a strict "chokepoint" before touching the filesystem. Crucially, the server relies exclusively on the handshake-proven `peer_subject` for authorization, deliberately ignoring any user-supplied recipient hints in the payload. The chokepoint ensures the file is still `pending`; if the row has transitioned, it fails closed, mapping the internal status directly to wire errors (`NOT_AUTHORIZED` for mismatched recipients, `EXPIRED` for timed-out files, and `REVOKED` for files recalled by the sender).
+
+Upon receiving the `DOWNLOAD_RESPONSE`, the recipient executes a strict verify-then-decrypt sequence. First, the sender's embedded certificate is verified against the CA trust anchor. Second, the RSA-PSS origin signature is verified over the canonical metadata struct to ensure the ciphertext and wrapped key hashes match the sender's original intent. Third, the AES key is unwrapped using the recipient's private key. Finally, the ciphertext is decrypted via AES-GCM. The GCM authentication tag includes the AAD binding (`file_id|sender|recipient`), which mathematically guarantees that the server has not maliciously substituted another ciphertext.
+
+```bash
+# Terminal 1: Server
+python -m zerotrust.server.main &
+
+# Terminal 2: Alice uploads
+python -m zerotrust.client.cli --user alice upload bob ./report.pdf
+
+# Terminal 3: Bob downloads
+python -m zerotrust.client.cli --user bob list
+python -m zerotrust.client.cli --user bob download <file_id>
+# → Produces report.pdf in client_bob/downloads/
+```
+
+## Section 6 — File Expiration
+
+The system relies on two distinct, real-time clocks: a 30-second freshness window for envelope nonces to prevent replay attacks, and a per-file `expiration` field governing retention time (defaulting to 7 days). These concepts are strictly separated in implementation.
+
+A background cleanup thread runs every 60 seconds to enforce these constraints on the server. It purges `seen_nonces` older than 5 minutes to prevent the SQLite cache from growing infinitely, and it sweeps the `files` table, marking any row where `expiration < now()` as `expired`. It then deletes the underlying ciphertext blob to reclaim disk space.
+
+Relying on the `expiration` integer alone is insufficient for a fail-closed architecture. Without the cleanup thread explicitly calling `mark_status('expired')`, a stale row would sit in the database with a `pending` status, requiring downstream handlers to implement redundant time checks. By aggressively transitioning the state machine to a terminal status, the server ensures that any late `DOWNLOAD_REQUEST` immediately trips the access control chokepoint and is rejected.
+
+## Section 7 — Security Analysis
+
+**Threat model:** The server acts as an untrusted relay. It CAN see metadata (sender identity, recipient identity, file size, timestamps, and upload/download timing patterns). It CANNOT see the plaintext file contents or the AES-256-GCM session key.
+
+**Defended:** The protocol defends against identity substitution through mutual Proof-of-Possession (both sides sign the handshake transcript). Network replay attacks are mitigated by the envelope nonce cache and strict timestamp windows. Ciphertext substitution is defeated by the AES-GCM AAD binding (`file_id|sender|recipient`). Forward integrity is guaranteed by the RSA-PSS origin signature, which cryptographically binds the ciphertext hash and the wrapped key hash to the original sender.
+
+**NOT defended (known limitations per ARCHITECTURE.md §12):** There is no forward secrecy; a compromise of a user's long-term RSA private key allows an attacker to re-decrypt past sessions if they recorded the traffic. There is no traffic-analysis resistance. CA bootstrap is manual, and PEM files are protected only by passwords (including a documented demo password in the config) rather than hardware backing.
+
+For a production deployment, the handshake must adopt ECDHE for forward secrecy, private keys should move to the OS keychain (or TPM/Secure Enclave), and the PKI must support real CRLs or short-lived certificates.
+
+## Division of Labor
+
+### Alp Büyükköse
+- **Issues owned:** #6, #7, #8, #15, #16, #17, #18, #19, #22, #23, #27, #29, #32, M1 Foundation.
+- **Notable contributions:** Designed M1 foundation architecture, protocol framing, CI pipelines, implemented AES-GCM AAD binding, RSA-PSS signatures, background cleanup threads, replay enforcement, and structured audit logging.
+- **Number of commits / PRs:** 24 commits.
+
+### Kerem Hakkı Koç
+- **Issues owned:** #5, #14, #16, #17.
+- **Notable contributions:** Established the project skeleton, CA structure, SQLite DB schema, multi-threaded server (`ThreadingTCPServer`), CRUD operations, and secure download access controls (chokepoints).
+- **Number of commits / PRs:** 5 commits.
+
+### Turgut Köroğlu
+- **Issues owned:** None tracked in git log.
+- **Notable contributions:** Code review, testing, documentation, and conceptual threat modeling.
+- **Number of commits / PRs:** 0 commits.
