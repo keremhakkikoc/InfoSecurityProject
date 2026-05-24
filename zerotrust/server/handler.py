@@ -45,6 +45,7 @@ from ..common.protocol import (
     send_message,
     validate_envelope,
 )
+from ..common.revoke import verify_revoke_struct
 from . import replay, store
 from .handshake import perform_server_handshake
 from .storage_layout import (
@@ -660,6 +661,248 @@ def _handle_download_request(
     )
 
 # ---------------------------------------------------------------------------
+# REVOKE_REQUEST (issue #24 / bonus)
+# ---------------------------------------------------------------------------
+
+# Status values that are "terminal" with respect to revocation.  Mapped to
+# the wire error code the server returns when the sender tries to revoke a
+# row in that state.  ``revoked`` is intentionally NOT in here — the
+# acceptance criteria require the second revoke to be a no-op success
+# (idempotent), not an error.
+_REVOKE_TERMINAL_STATES = {
+    "downloaded": "ALREADY_DOWNLOADED",
+    "expired": "EXPIRED",
+}
+
+
+def _handle_revoke_request(
+    sock,
+    envelope: dict[str, Any],
+    db_conn,
+    session: dict[str, Any],
+    ca_pubkey_pem: bytes,
+) -> None:
+    """Process a sender's ``REVOKE_REQUEST`` envelope.
+
+    The 7-step flow comes directly from the issue body:
+
+    1. Envelope replay/freshness check (same primitive as upload).
+    2. Look up the file row → ``NOT_FOUND`` if missing.
+    3. Ownership: the *handshake-proven* peer subject must equal
+       ``row["sender_id"]``.  The payload may not override this — that's
+       the first pitfall in the issue.  ``NOT_AUTHORIZED`` otherwise.
+    4. Re-verify the sender certificate against the CA and verify the
+       per-request RSA-PSS signature over the frozen revoke canonical
+       struct.  ``AUTH_FAILED`` on any failure — having an authenticated
+       session is *not* enough on its own (issue pitfall).
+    5. State machine: only ``pending`` rows can flip to ``revoked``.
+       ``downloaded`` → ``ALREADY_DOWNLOADED``; ``expired`` → ``EXPIRED``;
+       ``revoked`` → idempotent ``REVOKE_ACK`` no-op success.
+    6. ``store.mark_status(...)`` — never roll our own SQL update.
+    7. Reply ``REVOKE_ACK {file_id, status}``.
+
+    The ciphertext blob is deliberately left on disk; the cleanup thread
+    (issue #27) is the only piece allowed to touch the filesystem.
+    Disk-touching here would create atomicity bugs (issue pitfall).
+    """
+    request_id = _request_id(envelope)
+    sender = session.get("peer_subject")
+    sender_fp = _cert_fp(session.get("peer_cert"))
+
+    # 1. Replay protection (cheap — do FIRST to avoid crypto-cost DoS).
+    try:
+        envelope_nonce = base64.b64decode(envelope["nonce"], validate=True)
+    except Exception:  # noqa: BLE001
+        audit_error(
+            logger,
+            "revoke_reject",
+            reason="malformed_envelope_nonce",
+            sender=sender,
+            request_id=request_id,
+        )
+        _send_error(sock, "MALFORMED")
+        return
+    envelope_nonce_fp = fingerprint(envelope_nonce)
+    if not replay.check_and_record(db_conn, envelope_nonce, envelope["timestamp"]):
+        audit_warning(
+            logger,
+            "replay_reject",
+            scope="revoke",
+            sender=sender,
+            request_id=request_id,
+            nonce_fp=envelope_nonce_fp,
+            envelope_timestamp=envelope.get("timestamp"),
+        )
+        _send_error(sock, "STALE")
+        return
+
+    # Sanity-check payload shape before any DB / crypto work.
+    payload = envelope["payload"]
+    try:
+        file_id = payload["file_id"]
+        ts_field = payload["timestamp"]
+        if not isinstance(file_id, str) or str(uuid.UUID(file_id)) != file_id:
+            raise ProtocolError("invalid file_id")
+        if not isinstance(ts_field, int):
+            raise ProtocolError("timestamp must be int")
+        signature = _decode_b64_field(payload, "signature")
+    except (KeyError, ValueError, ProtocolError) as exc:
+        audit_warning(
+            logger,
+            "revoke_reject",
+            reason="malformed_payload",
+            sender=sender,
+            request_id=request_id,
+            err_type=type(exc).__name__,
+        )
+        _send_error(sock, "MALFORMED")
+        return
+
+    # 2. Look up the file row.
+    file_record = store.get_file(db_conn, file_id)
+    if file_record is None:
+        audit_warning(
+            logger,
+            "revoke_reject",
+            reason="file_not_in_db",
+            file_id=file_id,
+            sender=sender,
+            client_code="NOT_FOUND",
+            request_id=request_id,
+        )
+        _send_error(sock, "NOT_FOUND")
+        return
+
+    # 3. Ownership — the handshake identity is the ONLY truth source.
+    #    Per the issue pitfall, payload["sender"] must NEVER be used here.
+    if file_record["sender_id"] != sender:
+        audit_warning(
+            logger,
+            "unauthorized_revoke",
+            reason="sender_mismatch",
+            file_id=file_id,
+            requester=sender,
+            expected=file_record["sender_id"],
+            client_code="NOT_AUTHORIZED",
+            request_id=request_id,
+        )
+        _send_error(sock, "NOT_AUTHORIZED")
+        return
+
+    # 4. Re-verify the sender cert and the per-request signature.  We
+    #    rebuild the canonical struct from server-controlled values (the
+    #    handshake-proven sender, the row's file_id, the payload
+    #    timestamp the client signed) so a tampered payload field is
+    #    caught by the signature check.
+    if not verify_certificate(session["peer_cert"], ca_pubkey_pem, expected_subject=sender):
+        audit_warning(
+            logger,
+            "auth_fail",
+            scope="revoke",
+            reason="sender_cert_invalid",
+            sender=sender,
+            fp=sender_fp,
+            request_id=request_id,
+        )
+        _send_error(sock, "AUTH_FAILED")
+        return
+
+    if not verify_revoke_struct(
+        session["peer_cert"],
+        signature,
+        sender=sender,
+        file_id=file_id,
+        timestamp=ts_field,
+    ):
+        audit_error(
+            logger,
+            "revoke_sig_fail",
+            sender=sender,
+            file_id=file_id,
+            sender_fp=sender_fp,
+            sig_prefix=hashlib.sha256(signature).hexdigest()[:8],
+            request_id=request_id,
+        )
+        _send_error(sock, "AUTH_FAILED")
+        return
+
+    # 5. State machine.
+    current_status = file_record["status"]
+    if current_status == "revoked":
+        # Idempotent no-op success.  Acceptance criterion:
+        # "no log noise" — log at DEBUG so the audit stream stays clean
+        # on retries while still leaving a breadcrumb for operators.
+        logger.debug(
+            "revoke_idempotent file=%s sender=%s request_id=%s",
+            file_id, sender, request_id,
+        )
+        send_message(sock, make_envelope("REVOKE_ACK", {
+            "file_id": file_id,
+            "status": "revoked",
+        }))
+        return
+
+    if current_status in _REVOKE_TERMINAL_STATES:
+        terminal_code = _REVOKE_TERMINAL_STATES[current_status]
+        audit_warning(
+            logger,
+            "revoke_reject",
+            reason=f"status_{current_status}",
+            file_id=file_id,
+            sender=sender,
+            client_code=terminal_code,
+            request_id=request_id,
+        )
+        _send_error(sock, terminal_code)
+        return
+
+    if current_status != "pending":
+        # Unknown status — should never happen, but fail-closed.
+        audit_error(
+            logger,
+            "revoke_reject",
+            reason="unknown_status",
+            status=current_status,
+            file_id=file_id,
+            sender=sender,
+            client_code="INTERNAL_ERROR",
+            request_id=request_id,
+        )
+        _send_error(sock, "INTERNAL_ERROR")
+        return
+
+    # 6. Flip the row.  We delegate to store.mark_status — never roll our
+    #    own UPDATE here (issue pitfall).
+    try:
+        store.mark_status(db_conn, file_id, "revoked")
+    except (sqlite3.Error, ValueError) as exc:
+        audit_error(
+            logger,
+            "revoke_internal_error",
+            file_id=file_id,
+            sender=sender,
+            err_type=type(exc).__name__,
+            request_id=request_id,
+        )
+        _send_error(sock, "INTERNAL_ERROR")
+        return
+
+    # 7. ACK.
+    send_message(sock, make_envelope("REVOKE_ACK", {
+        "file_id": file_id,
+        "status": "revoked",
+    }))
+    audit_info(
+        logger,
+        "revoke_accept",
+        file_id=file_id,
+        sender=sender,
+        sender_fp=sender_fp,
+        request_id=request_id,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Connection driver
 # ---------------------------------------------------------------------------
 
@@ -723,6 +966,14 @@ def serve_connection(sock, addr, server_state):
                     db_conn,
                     session,
                     server_state,
+                )
+            elif msg_type == "REVOKE_REQUEST":
+                _handle_revoke_request(
+                    sock,
+                    envelope,
+                    db_conn,
+                    session,
+                    ca_pubkey_pem,
                 )
             else:
                 audit_warning(

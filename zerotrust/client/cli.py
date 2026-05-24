@@ -6,6 +6,7 @@ Usage::
     python -m zerotrust.client.cli --user alice upload <recipient> <file>   # M2 #12
     python -m zerotrust.client.cli --user alice list                        # M3 #15
     python -m zerotrust.client.cli --user alice download <file_id>          # M3 #17
+    python -m zerotrust.client.cli --user alice revoke <file_id>            # M3 #24 (bonus)
 
 This module implements the ``login`` subcommand (issue #15) and registers
 placeholder argparse subcommands for the upload/list/download verbs so
@@ -33,6 +34,7 @@ from collections.abc import Iterable
 
 from ..common.exceptions import AuthError, CryptoError, ProtocolError, ZeroTrustError
 from .download import list_pending
+from .revoke import revoke_file
 from .session import ClientAssetError, connected_session, login_session
 from .upload import upload_file
 
@@ -161,6 +163,44 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_revoke(args: argparse.Namespace) -> int:
+    """Open a session and revoke ``args.file_id``.
+
+    Per the issue's acceptance criteria, a second revoke of the same
+    file is a no-op success on the server — so this command exits 0
+    whenever the server returns ``REVOKE_ACK``, regardless of whether
+    the status actually changed in this call.
+    """
+    password = _resolve_password(args.password)
+    try:
+        with connected_session(args.user, password) as session:
+            ack = revoke_file(session, args.file_id)
+    except ClientAssetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (ConnectionRefusedError, TimeoutError) as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(str(exc).lower(), file=sys.stderr)
+        return 1
+    except ProtocolError as exc:
+        # Server-side ERROR codes (NOT_FOUND, NOT_AUTHORIZED, AUTH_FAILED,
+        # ALREADY_DOWNLOADED, EXPIRED, STALE, REPLAY, MALFORMED) surface
+        # here. The exit code is non-zero so scripts can detect refusal.
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (AuthError, CryptoError, ZeroTrustError):
+        print(AUTH_FAILED, file=sys.stderr)
+        return 1
+
+    print(
+        f"Revoked file_id={ack.get('file_id', args.file_id)}; "
+        f"status={ack.get('status', 'revoked')}"
+    )
+    return 0
+
+
 def cmd_download(args: argparse.Namespace) -> int:
     """Open a session and download ``args.file_id``."""
     password = _resolve_password(args.password)
@@ -230,6 +270,13 @@ def build_parser() -> argparse.ArgumentParser:
     download = sub.add_parser("download", help="Download a file by file_id (M3 #17).")
     download.add_argument("file_id", help="Identifier of the file to download.")
     download.set_defaults(func=cmd_download)
+
+    revoke = sub.add_parser(
+        "revoke",
+        help="Revoke a still-pending upload by file_id (M3 #24 bonus).",
+    )
+    revoke.add_argument("file_id", help="Identifier of the file to revoke.")
+    revoke.set_defaults(func=cmd_revoke)
 
     return parser
 
