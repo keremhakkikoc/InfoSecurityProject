@@ -270,6 +270,34 @@ python -m zerotrust.client.cli --user bob download <file_id>
 # → Produces report.pdf in client_bob/downloads/
 ```
 
+### Reproducible end-to-end demo
+
+The full 11-step PDF scenario is packaged at [`demo/run_demo.sh`](demo/run_demo.sh). From a fresh clone, two commands replay the whole flow without any manual terminal juggling:
+
+```bash
+make install
+bash demo/run_demo.sh
+```
+
+The orchestrator bootstraps the CA, issues `server`/`alice`/`bob` identities, registers recipient pubkeys, starts the server in the background under a `trap` (so it is killed even if the script aborts), runs Alice's upload and Bob's list+download, and asserts the recovered plaintext byte-matches the original. See [`demo/README.md`](demo/README.md) for the sample-file conventions and where the recovered plaintext lands.
+
+A captured run is embedded below (the `<FILE_ID>`/`<UNIX_TS>` placeholders correspond to per-run UUIDs and Unix timestamps that vary; the structure and final banner are stable):
+
+```
+=== 4. Start server in background on port 5050 ===
+Server running (pid=<PID>).
+=== 5. Alice uploads demo/sample_files/report.pdf to bob ===
+Uploaded file_id=<FILE_ID> to bob; expires=<UNIX_TS>
+=== 6. Bob lists his pending files ===
+<FILE_ID> sender=alice size=<N> expires=<UNIX_TS>
+=== 7. Bob downloads file_id=<FILE_ID> ===
+Downloaded file_id=<FILE_ID>
+=== 8. Verify plaintext match ===
+Plaintext match — demo OK
+```
+
+A still screenshot of the same run lives at [`demo/screenshot.png`](demo/screenshot.png) — capture it on a developer machine after the demo prints `Plaintext match — demo OK`.
+
 ## Section 6 — File Expiration
 
 The system relies on two distinct, real-time clocks: a 30-second freshness window for envelope nonces to prevent replay attacks, and a per-file `expiration` field governing retention time (defaulting to 7 days). These concepts are strictly separated in implementation.

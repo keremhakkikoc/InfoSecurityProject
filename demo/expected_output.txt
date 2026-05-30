@@ -1,0 +1,15 @@
+=== 1. Clean slate ===
+=== 2. CA + identities (server, alice, bob) ===
+=== 3. Client bundles + server pubkey registration ===
+=== 4. Start server in background on port 5050 ===
+Server running (pid=<PID>).
+=== 5. Alice uploads demo/sample_files/report.pdf to bob ===
+Uploaded file_id=<FILE_ID> to bob; expires=<UNIX_TS>
+Upload successful (file_id=<FILE_ID>)
+=== 6. Bob lists his pending files ===
+<FILE_ID> sender=alice size=<N> expires=<UNIX_TS>
+=== 7. Bob downloads file_id=<FILE_ID> ===
+Downloaded file_id=<FILE_ID>
+Download successful
+=== 8. Verify plaintext match ===
+Plaintext match — demo OK
