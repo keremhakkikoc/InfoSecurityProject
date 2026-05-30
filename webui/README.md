@@ -6,21 +6,36 @@ action shells out to `python -m zerotrust.client.cli`, so the real
 handshake, AES-GCM AAD binding, RSA-PSS origin signature, replay cache,
 and server-side chokepoint are all still in the call path.
 
-## Run it
+## Run it (3 terminals)
 
-Assumes the CA + identities are already bootstrapped and the server is
-already running (i.e. you've done the bootstrap section of the main
-README, then `python -m zerotrust.server.main`).
+Each terminal: `cd` into the repo and `source venv/bin/activate`.
 
 ```bash
-source venv/bin/activate
+# Terminal 1 — one-shot bootstrap (CA + server cert + alice + bob)
+make demo-setup
+
+# Terminal 1 — start the protocol server
+make server
+
+# Terminal 2 — start the web UI
 pip install -r webui/requirements.txt
-python webui/app.py
+make webui
 ```
 
-Then open <http://127.0.0.1:8000>. Left column is Alice (sender), right
-column is Bob (recipient). The collapsible "Server inspect" panel at the
-bottom shows the same data as `make inspect`.
+Open <http://127.0.0.1:8000>. The header has an **+ Add user** form so
+you can mint additional identities (charlie, dave, …) live during the
+demo — each one runs `make user USER=<name>` which does
+`ca-issue` + `client-setup` + `server-register` in one shot.
+
+Two dropdowns at the top of each column let you switch which user is
+acting (sender) and whose inbox you're viewing (recipient). The
+**Recent commands** panel below the columns shows the exact subprocess
+that fired for each click — useful to show graders "this button
+actually ran `python -m zerotrust.client.cli ...`".
+
+The collapsible **Server inspect** panel at the bottom mirrors
+`make inspect`: registered pubkeys, file metadata rows, and ciphertext
+blob sizes.
 
 ## What you can demo
 

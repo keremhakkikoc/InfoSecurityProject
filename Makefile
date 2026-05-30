@@ -13,7 +13,7 @@ PIP    ?= pip
 # All targets are phony — none of these produce a file with the same name.
 .PHONY: help install install-dev test test-cov lint lint-forbidden lint-frozen \
         lint-bandit lint-ruff format ci ca-init ca-issue client-setup \
-        server-register inspect clean
+        server-register inspect clean server webui user demo-setup
 
 help:
 	@echo "Targets:"
@@ -33,6 +33,10 @@ help:
 	@echo "  client-setup    build client_<user>/ bundle: make client-setup USER=alice"
 	@echo "  server-register register user's pubkey with server: make server-register USER=alice"
 	@echo "  inspect         dump server storage: registered users, file rows, ciphertext blobs"
+	@echo "  server          run zerotrust.server.main in foreground (Ctrl+C to stop)"
+	@echo "  webui           run the Flask demo UI on http://127.0.0.1:8000"
+	@echo "  user            full user bootstrap: make user USER=charlie (ca-issue + client-setup + server-register)"
+	@echo "  demo-setup      one-shot reset: clean + ca-init + server cert + alice + bob"
 	@echo "  clean           remove caches, __pycache__, generated keys/certs"
 
 install:
@@ -136,3 +140,31 @@ clean:
 	rm -rf .pytest_cache .ruff_cache .coverage htmlcov
 	rm -rf ca_data users client_*
 	rm -rf zerotrust/server/storage server/storage
+	rm -rf webui/.uploads
+
+# Foreground runners. Use separate terminals (or `&` if you know what you're
+# doing — the demo UI in webui/ assumes the server is already up).
+server:
+	$(PYTHON) -m zerotrust.server.main
+
+webui:
+	$(PYTHON) webui/app.py
+
+# One-shot user bootstrap: cert, client bundle, and server pubkey registration.
+# Idempotent — re-running an existing user just refreshes the bundle.
+user:
+	@if [ -z "$(USER)" ]; then \
+	    echo "Usage: make user USER=<name>"; exit 2; \
+	fi
+	$(MAKE) ca-issue       USER=$(USER)
+	$(MAKE) client-setup   USER=$(USER)
+	$(MAKE) server-register USER=$(USER)
+
+# Hard reset + full bootstrap for the 11-step PDF demo. Leaves you ready to
+# `make server` in one terminal and `make webui` (or the CLI) in another.
+demo-setup:
+	$(MAKE) clean
+	$(MAKE) ca-init
+	$(MAKE) ca-issue USER=server
+	$(MAKE) user USER=alice
+	$(MAKE) user USER=bob

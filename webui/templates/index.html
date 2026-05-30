@@ -11,6 +11,7 @@
       --fg: #e8ecf3;
       --muted: #8c94a8;
       --accent: #7aa2ff;
+      --accent2: #c084fc;
       --ok: #4ade80;
       --err: #f87171;
       --warn: #fbbf24;
@@ -21,11 +22,13 @@
       background: var(--bg); color: var(--fg); line-height: 1.5;
     }
     header {
-      padding: 16px 28px; border-bottom: 1px solid var(--border);
-      display: flex; align-items: baseline; gap: 12px;
+      padding: 14px 28px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     }
     header h1 { font-size: 18px; margin: 0; font-weight: 600; }
     header .sub { color: var(--muted); font-size: 13px; }
+    header .actions { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+    header form { display: inline-flex; gap: 6px; align-items: center; }
     .flashes { padding: 12px 28px 0; }
     .flash {
       padding: 10px 14px; border-radius: 6px; margin-bottom: 8px;
@@ -44,32 +47,40 @@
       border-radius: 8px; padding: 18px;
     }
     .panel h2 {
-      margin: 0 0 14px; font-size: 14px; text-transform: uppercase;
+      margin: 0 0 14px; font-size: 13px; text-transform: uppercase;
       letter-spacing: 0.08em; color: var(--muted); font-weight: 600;
     }
-    .panel h2 .who { color: var(--accent); text-transform: none; letter-spacing: 0; }
+    .panel h2 .who { color: var(--accent); text-transform: none; letter-spacing: 0; font-weight: 700; }
+    .panel h2 .who.alt { color: var(--accent2); }
+    .switcher {
+      display: flex; gap: 8px; align-items: center; margin-bottom: 14px;
+      padding-bottom: 12px; border-bottom: 1px dashed var(--border);
+    }
+    .switcher label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
     form.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     label { font-size: 13px; color: var(--muted); }
     input[type="text"], input[type="file"], select {
       background: #0b0d14; border: 1px solid var(--border); color: var(--fg);
-      padding: 8px 10px; border-radius: 5px; font-size: 13px;
+      padding: 7px 10px; border-radius: 5px; font-size: 13px;
       font-family: inherit;
     }
-    input[type="file"] { padding: 6px; }
+    input[type="file"] { padding: 5px; max-width: 220px; }
     button {
       background: var(--accent); color: #0a0c12; border: 0;
-      padding: 8px 14px; border-radius: 5px; cursor: pointer;
+      padding: 7px 13px; border-radius: 5px; cursor: pointer;
       font-weight: 600; font-size: 13px;
     }
     button.ghost {
       background: transparent; color: var(--fg); border: 1px solid var(--border);
     }
     button.danger { background: var(--err); color: #1a0606; }
+    a.btn-link { text-decoration: none; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th, td {
       padding: 8px 6px; text-align: left; vertical-align: middle;
       border-bottom: 1px solid var(--border);
     }
+    tr:last-child td { border-bottom: 0; }
     th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
     td.mono, code {
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -81,9 +92,9 @@
     .status.downloaded { background: rgba(74,222,128,0.15); color: var(--ok); }
     .status.revoked, .status.expired { background: rgba(248,113,113,0.15); color: var(--err); }
     .empty { color: var(--muted); font-style: italic; font-size: 13px; }
-    details { margin: 20px 28px 28px; }
+    details { margin: 0 28px 28px; }
     details summary {
-      cursor: pointer; color: var(--muted); padding: 8px 0;
+      cursor: pointer; color: var(--muted); padding: 10px 0;
       font-size: 13px; user-select: none;
     }
     details[open] summary { color: var(--fg); }
@@ -95,13 +106,40 @@
     }
     .row-actions { display: flex; gap: 6px; }
     .row-actions form { margin: 0; }
+
+    .commands {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 18px; margin: 0 28px 28px;
+    }
+    .commands h2 {
+      margin: 0 0 10px; font-size: 13px; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted); font-weight: 600;
+    }
+    .cmd-row {
+      display: grid; grid-template-columns: 72px 50px 1fr; gap: 10px;
+      padding: 6px 0; border-bottom: 1px solid var(--border);
+      font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px;
+    }
+    .cmd-row:last-child { border-bottom: 0; }
+    .cmd-ts { color: var(--muted); }
+    .cmd-rc.ok { color: var(--ok); }
+    .cmd-rc.fail { color: var(--err); }
+    .cmd-line { word-break: break-all; }
+    .cmd-out { color: var(--muted); margin-top: 2px; white-space: pre-wrap; }
   </style>
 </head>
 <body>
 
 <header>
   <h1>ZeroTrust File Drop</h1>
-  <span class="sub">Demo UI &middot; backend untouched, every action shells out to the real CLI</span>
+  <span class="sub">Demo UI &middot; every action shells out to the real CLI</span>
+
+  <div class="actions">
+    <form action="{{ url_for('add_user') }}" method="post" title="Bootstrap a new user: cert + client bundle + server registration">
+      <input type="text" name="username" placeholder="new user (a-z, 0-9, _, -)" maxlength="31" required pattern="^[a-z][a-z0-9_-]{0,30}$">
+      <button type="submit" class="ghost">+ Add user</button>
+    </form>
+  </div>
 </header>
 
 {% with messages = get_flashed_messages(with_categories=true) %}
@@ -114,59 +152,99 @@
   {% endif %}
 {% endwith %}
 
+{% if not users %}
+  <div class="flashes">
+    <div class="flash error">
+      No users registered yet. Run <code>make demo-setup</code> or use the “+ Add user” form above
+      after the server is up (<code>make server</code>).
+    </div>
+  </div>
+{% endif %}
+
 <div class="grid">
 
-  <!-- Alice / sender column -->
+  <!-- Sender column -->
   <section class="panel">
-    <h2><span class="who">Alice</span> &middot; send to recipient</h2>
+    <h2><span class="who">Sender</span> &middot; send to recipient</h2>
 
-    <form class="row" action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
-      <input type="hidden" name="sender" value="alice">
-      <label>To
-        <select name="recipient">
-          <option value="bob" selected>bob</option>
-          <option value="alice">alice</option>
-        </select>
-      </label>
-      <input type="file" name="file" required>
-      <button type="submit">Upload</button>
-    </form>
-
-    <h2 style="margin-top: 22px;">Alice's sent files</h2>
-    {% if sent_by_alice %}
-      <table>
-        <thead>
-          <tr><th>file_id</th><th>to</th><th>status</th><th></th></tr>
-        </thead>
-        <tbody>
-          {% for f in sent_by_alice %}
-            <tr>
-              <td class="mono fid">{{ f.file_id[:8] }}…{{ f.file_id[-4:] }}</td>
-              <td class="mono">{{ f.recipient_id }}</td>
-              <td><span class="status {{ f.status }}">{{ f.status }}</span></td>
-              <td class="row-actions">
-                {% if f.status == 'pending' %}
-                  <form action="{{ url_for('revoke', file_id=f.file_id) }}" method="post">
-                    <input type="hidden" name="sender" value="alice">
-                    <button type="submit" class="ghost">Revoke</button>
-                  </form>
-                {% endif %}
-              </td>
-            </tr>
+    <div class="switcher">
+      <label>Acting as</label>
+      <form method="get" action="{{ url_for('index') }}" style="display:inline-flex; gap:6px;">
+        <input type="hidden" name="inbox" value="{{ inbox_user }}">
+        <select name="sender" onchange="this.form.submit()">
+          {% for u in users %}
+            <option value="{{ u }}" {% if u == sender %}selected{% endif %}>{{ u }}</option>
           {% endfor %}
-        </tbody>
-      </table>
+        </select>
+      </form>
+    </div>
+
+    {% if sender %}
+      <form class="row" action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
+        <input type="hidden" name="sender" value="{{ sender }}">
+        <label>To
+          <select name="recipient" required>
+            {% for u in users %}
+              {% if u != sender %}
+                <option value="{{ u }}" {% if u == inbox_user %}selected{% endif %}>{{ u }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </label>
+        <input type="file" name="file" required>
+        <button type="submit">Upload</button>
+      </form>
+
+      <h2 style="margin-top: 22px;"><span class="who">{{ sender }}</span>'s sent files</h2>
+      {% if sent %}
+        <table>
+          <thead>
+            <tr><th>file_id</th><th>to</th><th>status</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for f in sent %}
+              <tr>
+                <td class="mono fid">{{ f.file_id[:8] }}…{{ f.file_id[-4:] }}</td>
+                <td class="mono">{{ f.recipient_id }}</td>
+                <td><span class="status {{ f.status }}">{{ f.status }}</span></td>
+                <td class="row-actions">
+                  {% if f.status == 'pending' %}
+                    <form action="{{ url_for('revoke', file_id=f.file_id) }}" method="post">
+                      <input type="hidden" name="sender" value="{{ sender }}">
+                      <button type="submit" class="ghost">Revoke</button>
+                    </form>
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="empty">No files sent by {{ sender }} yet.</p>
+      {% endif %}
     {% else %}
-      <p class="empty">No files sent yet.</p>
+      <p class="empty">Add a user first to enable upload.</p>
     {% endif %}
   </section>
 
-  <!-- Bob / recipient column -->
+  <!-- Inbox column -->
   <section class="panel">
-    <h2><span class="who">Bob</span> &middot; inbox</h2>
+    <h2><span class="who alt">Recipient</span> &middot; inbox</h2>
+
+    <div class="switcher">
+      <label>Viewing inbox of</label>
+      <form method="get" action="{{ url_for('index') }}" style="display:inline-flex; gap:6px;">
+        <input type="hidden" name="sender" value="{{ sender }}">
+        <select name="inbox" onchange="this.form.submit()">
+          {% for u in users %}
+            <option value="{{ u }}" {% if u == inbox_user %}selected{% endif %}>{{ u }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
 
     {% if list_err %}
-      <p class="flash error">List failed: {{ list_err }}</p>
+      <div class="flash error" style="margin-bottom: 14px;">List failed: {{ list_err }}</div>
     {% endif %}
 
     {% if pending %}
@@ -181,7 +259,7 @@
               <td class="mono">{{ f.sender }}</td>
               <td class="mono">{{ f.size }}</td>
               <td class="row-actions">
-                <a href="{{ url_for('download', file_id=f.file_id) }}">
+                <a class="btn-link" href="{{ url_for('download', file_id=f.file_id, user=inbox_user) }}">
                   <button type="button">Download</button>
                 </a>
               </td>
@@ -189,17 +267,40 @@
           {% endfor %}
         </tbody>
       </table>
-    {% else %}
+    {% elif not list_err %}
       <p class="empty">Inbox empty.</p>
     {% endif %}
 
-    <form class="row" style="margin-top: 16px;" action="{{ url_for('index') }}" method="get">
+    <form class="row" style="margin-top: 16px;" method="get" action="{{ url_for('index') }}">
+      <input type="hidden" name="sender" value="{{ sender }}">
+      <input type="hidden" name="inbox" value="{{ inbox_user }}">
       <button type="submit" class="ghost">Refresh inbox</button>
     </form>
   </section>
 
 </div>
 
+<!-- Recent commands -->
+<div class="commands">
+  <h2>Recent commands &middot; what just fired behind the buttons</h2>
+  {% if recent %}
+    {% for c in recent %}
+      <div class="cmd-row">
+        <span class="cmd-ts">{{ c.ts }}</span>
+        <span class="cmd-rc {{ 'ok' if c.rc == 0 else 'fail' }}">rc={{ c.rc }}</span>
+        <div>
+          <div class="cmd-line">$ {{ c.cmd }}</div>
+          {% if c.stdout %}<div class="cmd-out">{{ c.stdout }}</div>{% endif %}
+          {% if c.stderr %}<div class="cmd-out" style="color: var(--err);">{{ c.stderr }}</div>{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty">No commands yet — click something.</p>
+  {% endif %}
+</div>
+
+<!-- Server inspect -->
 <details>
   <summary>Server inspect — what does the untrusted relay actually see?</summary>
   <div class="inspect-grid">
