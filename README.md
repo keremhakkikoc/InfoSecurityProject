@@ -455,56 +455,119 @@ out of the "local trusted client" zone, which is why we keep
 
 ## Section 7 — Security Analysis
 
-**Threat model:** The server acts as an untrusted relay. It CAN see metadata (sender identity, recipient identity, file size, timestamps, and upload/download timing patterns). It CANNOT see the plaintext file contents or the AES-256-GCM session key.
+**Threat model:** The server acts as an untrusted relay. It CAN see
+metadata (sender identity, recipient identity, file size, timestamps,
+and upload/download timing patterns). It CANNOT see the plaintext file
+contents, the AES-256-GCM session key, or filenames.
 
-**Defended:** The protocol defends against identity substitution through mutual Proof-of-Possession (both sides sign the handshake transcript). Network replay attacks are mitigated by the envelope nonce cache and strict timestamp windows. Ciphertext substitution is defeated by the AES-GCM AAD binding (`file_id|sender|recipient`). Forward integrity is guaranteed by the RSA-PSS origin signature, which cryptographically binds the ciphertext hash and the wrapped key hash to the original sender.
+### Attack scenarios and defences
 
-**NOT defended (known limitations per ARCHITECTURE.md §12):** There is no forward secrecy; a compromise of a user's long-term RSA private key allows an attacker to re-decrypt past sessions if they recorded the traffic. There is no traffic-analysis resistance. CA bootstrap is manual, and PEM files are protected only by passwords (including a documented demo password in the config) rather than hardware backing.
+- **MITM during handshake** — both sides exchange CA-signed certs in
+  `HELLO`, verify against the same trust anchor, and sign the transcript
+  hash `SHA-256(nonce_c ‖ nonce_s ‖ pre_master_ct)`. An attacker who
+  steals one private key still cannot impersonate the other party.
+- **Replayed upload / download requests** — every envelope carries a
+  fresh 16-byte nonce + Unix timestamp; the server's `seen_nonces` cache
+  rejects duplicates and the 30 s window drops stale envelopes.
+- **Unauthorised file access** — the chokepoint in `handler.py` gates
+  every `DOWNLOAD_REQUEST` on the handshake-proven `peer_subject`,
+  fail-closed. Generic `AUTH_FAILED` is returned to avoid an oracle.
+- **Forged metadata** — `UPLOAD_REQUEST` carries an RSA-PSS origin
+  signature over a canonical struct that binds `ciphertext_sha256`,
+  `wrapped_key_sha256`, sender, recipient, file_id, timestamp,
+  expiration. Server and recipient both re-verify.
+- **Malicious server-side ciphertext / wrapped-key swap** — defeated by
+  the AES-GCM AAD binding (`file_id|sender|recipient`) and by the
+  origin signature covering both ciphertext and wrapped-key hashes.
+- **Compromised client private key** — *not defended*. Anyone with
+  Bob's PEM and password can decrypt his future and (recorded) past
+  traffic. Mitigation belongs in production (HSM / OS keychain).
+- **Weak randomness** — all nonces, AES keys, and pre-master values
+  come from `os.urandom` / `secrets`; no deterministic-nonce paths.
+- **Log leakage** — `zerotrust/common/logger.py` redacts cert
+  fingerprints and refuses to log private-key material or ciphertext.
+- **Metadata leakage (filenames, sizes, timing)** — filenames never
+  enter the protocol envelope (confidential metadata bonus). File
+  sizes and upload/download timing remain visible to the server by
+  design; a real deployment would pad to size buckets and add cover
+  traffic.
 
-For a production deployment, the handshake must adopt ECDHE for forward secrecy, private keys should move to the OS keychain (or TPM/Secure Enclave), and the PKI must support real CRLs or short-lived certificates.
+**Out of scope (known limitations per ARCHITECTURE.md §12):** no
+forward secrecy (long-term RSA keys decrypt past sessions if traffic
+was recorded), no traffic-analysis resistance, manual CA bootstrap,
+PEM files protected only by passwords (including the documented demo
+password). Production deployment would adopt ECDHE for forward
+secrecy, move private keys to the OS keychain (or TPM / Secure
+Enclave), and support real CRLs or short-lived certificates.
 
 ## Division of Labor
 
-The team split the system into three coherent areas of ownership so the
-M1 → M3 milestones could progress in parallel without merge contention.
-Each member led the design, implementation, and review of their areas
-and acted as code-reviewer on the others.
+### Team workflow
 
-### Alp Büyükköse — Cryptographic core and operational hardening
-- Authored the frozen design contract (`ARCHITECTURE.md`, `AI.md`) and
-  the frozen-signature inventory that the CI linter enforces against
-  drift (`scripts/check_frozen_signatures.py`).
-- Designed the on-the-wire envelope and canonical-struct formats
-  (`zerotrust/common/protocol.py`, `canonical.py`) and the cryptographic
-  primitives: AES-256-GCM with AAD binding
-  (`file_id|sender|recipient`), RSA-PSS origin signatures over the
-  canonical metadata struct, and the recipient-side wrap/unwrap flow.
-- Built the operational defences: 30 s envelope-replay nonce cache, the
-  background cleanup thread that sweeps expired files and stale nonces,
-  and the structured audit logging that sanitises sensitive fields.
-- Maintained the CI pipeline (ruff, bandit, forbidden-imports, frozen
-  signatures) and authored the demo orchestrator (`demo/run_demo.sh`).
+Every unit of work in the project corresponds to a GitHub issue. Work
+flowed through a strict branch-per-issue → pull-request → review →
+merge pipeline:
 
-### Kerem Hakkı Koç — Server architecture and access control
-- Bootstrapped the project skeleton, package layout, and the offline
-  CA tooling (`zerotrust/ca/`).
-- Designed the SQLite metadata schema and the storage layer's CRUD
-  helpers (`zerotrust/server/store.py`, `storage_layout.py`).
-- Implemented the multi-threaded TCP server (`ThreadingTCPServer`) with
-  daemon worker threads, graceful SIGINT shutdown, and the request
-  dispatcher (`server/main.py`, `handler.py`).
-- Owns the access-control chokepoint that gates every `DOWNLOAD_REQUEST`
-  against the handshake-proven `peer_subject`, mapping internal status
-  to wire errors fail-closed.
+1. **Issues** (`#1` … `#32`) defined scope, acceptance criteria, and
+   the milestone (M1 foundation, M2 handshake + upload, M3 download +
+   hardening + bonus).
+2. **Branches** named `feat/issue-NN-*` were opened off `main`; the
+   owner implemented the issue in isolation.
+3. **CI on every push** ran the four-stage sweep before any merge was
+   possible: `ruff` (style), `bandit` (security lint), the custom
+   `scripts/check_forbidden_imports.py` (no `ssl` / `pyOpenSSL`, no
+   plaintext storage paths), and `scripts/check_frozen_signatures.py`
+   (every public function signature still matches `ARCHITECTURE.md`'s
+   inventory).
+4. **Pull requests** required passing CI and a code review by at least
+   one other team member. **Alp owned the merge button** and resolved
+   any merge conflicts that arose when parallel M2/M3 branches landed
+   close together.
+5. **Frozen contracts** — `ARCHITECTURE.md` (system design, wire
+   protocol §7, SQLite schema §5, frozen signatures §10.1) and `AI.md`
+   (zero-trust coding rules) were authored in M1 and treated as
+   read-only specs afterwards; the frozen-signatures linter mechanically
+   enforces that runtime code stays faithful to the design.
 
-### Turgut Köroğlu — Quality assurance, documentation, and threat modelling
-- Drove the project's threat-modelling discussions and the
-  "defended / not defended" framing that became README §7.
-- Reviewed milestone PRs end-to-end and contributed the documentation
-  pass for the handshake, upload, signature, retrieval, and expiration
-  flows in the README.
-- Maintained the regression-test taxonomy under `zerotrust/tests/`,
-  ensuring every milestone landed with happy-path *and* negative-path
-  coverage, and helped shape the end-to-end PDF integration test.
-- Owns the demo presentation flow and the manual acceptance pass
-  before each milestone PR merged.
+This separation let three people work in parallel after M1 without
+stepping on each other, while keeping the cryptographic core
+auditable: every PR diff lived under a known issue, every issue had
+acceptance criteria, every merge passed CI.
+
+### Issue ownership
+
+| Member | Owned issues | Areas of responsibility |
+|---|---|---|
+| **Alp Büyükköse** | M1 foundation (#1–#4), #6, #7, #8, #19, #20, #22b, #24, #25, #26, #27 | Cryptographic core, operational hardening, CI pipeline, frozen contracts, merge ownership |
+| **Kerem Hakkı Koç** | #5, #13, #14, #15, #16, #17, #21, #22a | Server architecture, SQLite storage, access-control chokepoint, secure download |
+| **Turgut Köroğlu** | #9, #10, #11a, #11b, #12, #18, #23, #28 | Client-side flows, integration tests, documentation, demo orchestration |
+
+### Areas in detail
+
+**Alp Büyükköse — Cryptographic core, operational hardening, pipeline**
+authored the frozen design contract (`ARCHITECTURE.md`, `AI.md`) and
+the frozen-signature inventory the CI linter enforces against drift.
+Implemented the cryptographic primitives — AES-256-GCM with AAD binding
+(`file_id|sender|recipient`), RSA-PSS origin signatures over the
+canonical metadata struct, RSA-OAEP key wrapping — and the operational
+defences (replay nonce cache, background cleanup thread, structured
+audit logging). Maintained the four-stage CI gate (ruff, bandit,
+forbidden-imports, frozen-signatures) and acted as merge owner /
+conflict resolver across milestone PRs.
+
+**Kerem Hakkı Koç — Server architecture and access control** bootstrapped
+the project skeleton and the offline CA tooling (`zerotrust/ca/`),
+designed the SQLite metadata schema (`zerotrust/server/store.py`,
+`storage_layout.py`), implemented the multi-threaded TCP server
+(`ThreadingTCPServer`) with daemon workers and graceful SIGINT shutdown,
+and built the request dispatcher (`handler.py`). Owns the access-control
+chokepoint that gates every `DOWNLOAD_REQUEST` against the
+handshake-proven `peer_subject` and the pubkey-directory lookup path.
+
+**Turgut Köroğlu — Client flows, integration tests, documentation**
+implemented the client-side handshake + session lifecycle, the upload
+and download CLI verbs, and the integration tests under
+`zerotrust/tests/test_integration.py`. Drove the README documentation
+pass for sections covering the handshake, upload, retrieval, and
+demo, and authored the demo orchestrator (`demo/run_demo.sh`) plus the
+static demo-script audit (`tests/test_demo_script.py`).
