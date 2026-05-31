@@ -53,6 +53,15 @@ RESERVED_USERS = {"server"}  # not selectable as sender/recipient in the UI
 # can show *which* subprocess fired behind each button click.
 RECENT_COMMANDS: deque[dict[str, Any]] = deque(maxlen=20)
 
+# Maps file_id -> original filename uploaded through the UI. Lives for the
+# Flask process lifetime only. The protocol intentionally does NOT carry the
+# filename (untrusted server must not see it), so this is purely a local
+# convenience for the demo: when Bob clicks "Download", we hand the browser
+# back the .png / .pdf / whatever Alice originally chose.
+UPLOAD_FILENAMES: dict[str, str] = {}
+
+UPLOAD_OK_RE = re.compile(r"^Uploaded file_id=(\S+)", re.MULTILINE)
+
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
 
 
@@ -245,6 +254,11 @@ def upload():
     rc, out, err = run_cli(sender, "upload", recipient, str(save_path))
     if rc == 0:
         flash(out.strip(), "ok")
+        # Remember the original filename so /download can hand the
+        # browser back the right extension instead of the bare UUID.
+        m = UPLOAD_OK_RE.search(out)
+        if m:
+            UPLOAD_FILENAMES[m.group(1)] = safe_name
     else:
         flash(f"Upload failed: {(err or out).strip()}", "error")
     return redirect(url_for("index", sender=sender, inbox=recipient))
@@ -264,10 +278,14 @@ def download(file_id: str):
     if not downloaded.is_file():
         flash(f"Downloaded file missing at {downloaded}", "error")
         return redirect(url_for("index", inbox=user))
+    # Hand the browser the original filename if we know it (uploads done
+    # through this Flask process during its current lifetime). Falls back
+    # to the file_id so CLI-side uploads still produce a usable name.
+    nice_name = UPLOAD_FILENAMES.get(file_id, file_id)
     return send_file(
         str(downloaded),
         as_attachment=True,
-        download_name=file_id,
+        download_name=nice_name,
     )
 
 

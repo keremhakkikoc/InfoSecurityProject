@@ -24,61 +24,108 @@ and end-to-end encryption are implemented from scratch on top of the
 | Milestone | Status |
 |---|---|
 | **M1 — Foundation (solo)** | ✅ Complete |
-| M2 — Handshake + Upload (parallel) | ✅ Complete (this PR) |
-| M3 — Download + Hardening + Bonus | ⚪ Not started |
+| **M2 — Handshake + Upload (parallel)** | ✅ Complete |
+| **M3 — Download + Hardening + Bonus** | ✅ Complete |
 
-### What M1 ships
+All three milestones land on `main`. The full 11-step PDF demo is
+reproducible from a fresh clone via `bash demo/run_demo.sh` (see
+[Section 5 — Secure Retrieval](#section-5--secure-retrieval-and-access-control)).
 
-- `ARCHITECTURE.md` — frozen system design, including the custom JSON
-  certificate format (§3.2), the wire protocol (§7), the SQLite schema
-  (§5), and the **frozen function signatures** that Phase 2/3 issues
-  implement against (§10.1).
-- `AI.md` — coding rules (zero-trust, fail-closed, constant-time
-  comparison, no SSL libs).
-- Working **CA module** with a CLI (`init`, `issue <username>`, `verify`).
-- Working **TCP framing + envelope** in `zerotrust/common/protocol.py`.
-- Working **crypto primitives** (RSA keygen with encrypted PEM, RSA-PSS
-  sign/verify, RSA-OAEP wrap/unwrap, AES-256-GCM, HKDF-SHA256) in
-  `zerotrust/common/crypto_primitives.py`.
-- Working **replay nonce cache** (`zerotrust/server/replay.py`).
-- Frozen `NotImplementedError` stubs for every Phase 2/3 entry point so
-  parallel development is unblocked.
-- 57 pytest tests covering happy path + negative path for every M1 module.
+### Feature inventory
+
+**Required (assignment rubric):**
+
+- Offline **PKI**: custom JSON certificates signed by an in-house CA, no
+  X.509 anywhere on the hot path (`zerotrust/ca/`).
+- **Mutual handshake** with transcript-bound Proof-of-Possession (both
+  sides sign `SHA-256(nonce_c ‖ nonce_s ‖ pre_master_ct)`).
+- **End-to-end file encryption**: AES-256-GCM with AAD bound to
+  `file_id|sender|recipient`, per-file random key wrapped under the
+  recipient's RSA-OAEP-SHA256 pubkey.
+- **RSA-PSS origin signatures** over a canonical seven-field metadata
+  struct (`ciphertext_sha256`, `wrapped_key_sha256`, `sender`,
+  `recipient`, `file_id`, `timestamp`, `expiration`).
+- **Access-control chokepoint** that gates every download on the
+  handshake-proven `peer_subject`, fail-closed.
+- **Expiration enforcement**: per-file TTL plus a background cleanup
+  thread that flips expired rows to a terminal status and reclaims
+  ciphertext blobs.
+- **Replay protection**: 30 s timestamp window plus a server-side
+  nonce-cache (`seen_nonces`).
+- **Structured audit logging** with sensitive-data sanitisation.
+
+**Bonus features implemented (see [Bonus Features](#bonus-features)):**
+
+- Revocation before download (sender can recall a still-pending file).
+- One-time download (server flips `pending → downloaded`, second attempt
+  yields `ALREADY_DOWNLOADED`).
+- Signed recipient acknowledgement (`DOWNLOAD_ACK`).
+- Confidential metadata (filename never enters the protocol).
+
+**Quality bar:** 274 pytest tests (happy + negative path coverage for
+handshake, upload, download, revocation, expiration, replay, audit
+logging, cleanup), plus a four-stage CI sweep (`ruff`, `bandit`,
+`scripts/check_forbidden_imports.py`, `scripts/check_frozen_signatures.py`).
 
 ## Module Layout
 
 ```
 zerotrust/
-├── common/
-│   ├── crypto_primitives.py    # RSA, AES-GCM, HKDF wrappers
-│   ├── protocol.py             # length-prefixed JSON framing + envelope
-│   ├── canonical.py            # canonical JSON for signing
-│   ├── logger.py               # logger setup, fingerprint redaction
-│   └── exceptions.py           # CryptoError / AuthError / ProtocolError
-├── ca/
-│   ├── cert.py                 # issue_certificate / verify_certificate
-│   └── ca.py                   # CLI: init / issue / verify
-├── server/
-│   ├── replay.py               # ✅ implemented (check_and_record + purge)
-│   ├── store.py                # 🟡 stub — Phase 2 issue #14
-│   ├── handshake.py            # 🟡 stub — Phase 2 issue #8
-│   ├── handler.py              # 🟡 stub — Phase 2 issue #5
-│   └── main.py                 # 🟡 stub — Phase 2 issue #5
-├── client/
-│   ├── cli.py                  # 🟡 stub — Phase 2 issue #9
-│   ├── handshake.py            # 🟡 stub — Phase 2 issue #8
-│   ├── upload.py               # 🟡 stub — Phase 2 issue #12
-│   └── download.py             # 🟡 stub — Phase 3 issue #17
-└── tests/
-    ├── test_protocol.py
-    ├── test_crypto.py
-    ├── test_canonical.py
-    ├── test_ca.py
-    └── test_replay.py
+├── common/                       # shared primitives, never imports server/ or client/
+│   ├── crypto_primitives.py      # RSA keygen, RSA-PSS sign/verify, RSA-OAEP, AES-GCM, HKDF
+│   ├── protocol.py               # length-prefixed JSON framing, envelopes, MAX 64 MiB
+│   ├── canonical.py              # canonical JSON for everything that gets signed
+│   ├── file_crypto.py            # encrypt_file_blob (AES-GCM + AAD), decrypt_file_blob
+│   ├── key_wrap.py               # wrap_aes_key_for / unwrap_aes_key
+│   ├── origin.py                 # sign_origin_struct / verify_origin_struct (RSA-PSS)
+│   ├── transcript.py             # SHA-256(nonce_c ‖ nonce_s ‖ pre_master_ct) hash
+│   ├── revoke.py                 # canonical struct shared by client+server revoke
+│   ├── logger.py                 # structured logger + fingerprint redaction
+│   └── exceptions.py             # CryptoError / AuthError / ProtocolError
+├── ca/                           # offline CA — custom JSON certs, no X.509
+│   ├── cert.py                   # issue_certificate / verify_certificate
+│   └── ca.py                     # CLI: init / issue / verify
+├── server/                       # untrusted relay — sees ciphertext + routing only
+│   ├── main.py                   # ThreadingTCPServer entry point + SIGINT shutdown
+│   ├── handler.py                # request dispatcher + access-control chokepoint
+│   ├── handshake.py              # server side of mutual PoP handshake
+│   ├── store.py                  # SQLite CRUD: files, seen_nonces, acks tables
+│   ├── storage_layout.py         # path resolvers for pubkey dir + blob dir
+│   ├── replay.py                 # nonce check_and_record + purge_older_than
+│   └── cleanup.py                # background thread: expire files + GC nonces
+├── client/                       # trusted local CLI
+│   ├── cli.py                    # argparse: login / upload / list / download / revoke
+│   ├── session.py                # connected_session() context manager
+│   ├── handshake.py              # client side of mutual PoP handshake
+│   ├── peer.py                   # fetch_peer_cert + CA verification
+│   ├── upload.py                 # build origin struct, RSA-PSS sign, send UPLOAD_REQUEST
+│   ├── download.py               # list_pending, download_file, verify-then-decrypt
+│   └── revoke.py                 # send signed REVOKE_REQUEST, expect REVOKE_ACK
+└── tests/                        # 274 tests — see `make test` for the full sweep
+    ├── test_ca.py, test_canonical.py, test_crypto.py, test_protocol.py
+    ├── test_handshake.py, test_pop.py, test_origin.py, test_key_wrap.py
+    ├── test_upload.py, test_server_upload.py, test_file_crypto.py
+    ├── test_download.py, test_download_access.py, test_pending_list.py
+    ├── test_revocation.py, test_download_ack.py
+    ├── test_replay.py, test_replay_enforcement.py, test_cleanup.py
+    ├── test_audit_log.py, test_pubkey_directory.py, test_store.py
+    ├── test_server_boot.py, test_client_cli.py
+    ├── test_integration.py        # full PDF demo as a single pytest
+    └── test_demo_script.py        # static asserts on demo/run_demo.sh
 ```
 
-The `legacy/` directory contains the pre-architecture X.509 prototype, kept
-for reference; nothing in the active package imports from it.
+Other top-level directories:
+
+```
+demo/                             # reproducible 11-step PDF demo + tests
+├── run_demo.sh                   # one-shot orchestrator (bootstrap → upload → diff)
+├── sample_files/                 # fixture inputs for the demo
+├── expected_output.txt           # reference run output
+└── README.md
+webui/                            # OPTIONAL Flask demo UI (separate branch)
+scripts/                          # CI helpers: forbidden-imports + frozen-signatures lint
+legacy/                           # pre-architecture X.509 prototype — reference only
+```
 
 ## How to Run
 
@@ -87,51 +134,83 @@ for reference; nothing in the active package imports from it.
 ```bash
 python -m venv venv
 source venv/bin/activate         # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+make install                     # or: pip install -r requirements.txt
+```
+
+For development (lint + coverage tools):
+
+```bash
+make install-dev
 ```
 
 ### 2. Run the test suite
 
 ```bash
-pytest
+make test                        # or: pytest
 ```
 
-All 57 tests should pass in under 2 seconds.
+All 274 tests should pass in well under a minute.
 
-### 3. Bootstrap the CA and issue user certificates
+### 3. End-to-end demo (one command)
 
 ```bash
-# Initialise the CA (writes ca_data/{ca_private.pem, ca_public.pem, ca_cert.json})
-python -m zerotrust.ca.ca init
-
-# Issue certs for two demo users (writes users/<name>/{private.pem, public.pem, cert.json})
-python -m zerotrust.ca.ca issue alice
-python -m zerotrust.ca.ca issue bob
-
-# Confirm a cert verifies against the CA trust anchor
-python -m zerotrust.ca.ca verify users/alice/cert.json
+bash demo/run_demo.sh
 ```
 
-### 4. Server / client (Phase 2)
+The orchestrator wipes any previous state, bootstraps the CA, mints
+`server` / `alice` / `bob` identities, starts the server in the
+background under a `trap`, runs Alice's upload and Bob's download, and
+asserts byte-equality between the original and recovered plaintext.
+A successful run ends with `Plaintext match — demo OK`.
 
-The `zerotrust.server.main` and `zerotrust.client.cli` entry points raise
-`NotImplementedError` until Phase 2 issues #5 and #9 land. The legacy
-prototype (`legacy/server_x509.py`, `legacy/client_x509.py`) demonstrates a
-working RSA-OAEP + HKDF handshake against X.509 certs and is a useful
-reference, but it does **not** match the frozen architecture.
+### 4. Manual two-terminal flow
+
+If you want to drive each step interactively:
+
+```bash
+# One-shot bootstrap (CA + server cert + alice + bob)
+make demo-setup
+
+# Terminal 1 — protocol server
+make server                      # binds 127.0.0.1:5050
+
+# Terminal 2 — client actions
+python -m zerotrust.client.cli --user alice login
+python -m zerotrust.client.cli --user alice upload bob ./somefile.pdf
+python -m zerotrust.client.cli --user bob list
+python -m zerotrust.client.cli --user bob download <file_id>
+python -m zerotrust.client.cli --user alice revoke <file_id>
+```
+
+To add more identities live:
+
+```bash
+make user USER=charlie           # ca-issue + client-setup + server-register
+```
+
+To peek at server-side state without touching the client:
+
+```bash
+make inspect                     # registered pubkeys + DB rows + ciphertext blobs
+```
 
 ## Demo password handling
 
 Per `AI.md` §3.10, all PEM-encoded private keys are protected with
-`BestAvailableEncryption(password)`. For demo and testing, the CA CLI
-accepts:
+`BestAvailableEncryption(password)`. The CA and the client CLI both
+resolve their passwords through the same three-step ladder:
 
-1. `--password <pw>` argument (highest priority)
-2. `ZEROTRUST_CA_PASSWORD` environment variable
-3. The hard-coded fallback `demo-password` (for grading convenience only)
+1. Explicit `--password <pw>` argument (highest priority).
+2. Environment variable:
+   - `ZEROTRUST_CA_PASSWORD` for the offline CA tooling.
+   - `ZEROTRUST_USER_PASSWORD` for the client CLI's per-user private key.
+3. The hard-coded fallback `demo-password` (for grading convenience).
 
-This fallback is documented here, as required. Production deployments would
-prompt interactively or use an OS keychain.
+This fallback is documented here, as required by the assignment. The
+demo orchestrator (`demo/run_demo.sh`) and the optional `webui/` UI
+both rely on the env-var path so prompts never block. Production
+deployments would prompt interactively or pull the password from an OS
+keychain (see [Section 7 — Security Analysis](#section-7--security-analysis)).
 
 ## Section 2 — Secure Handshake and Session Key Establishment
 
@@ -306,6 +385,74 @@ A background cleanup thread runs every 60 seconds to enforce these constraints o
 
 Relying on the `expiration` integer alone is insufficient for a fail-closed architecture. Without the cleanup thread explicitly calling `mark_status('expired')`, a stale row would sit in the database with a `pending` status, requiring downstream handlers to implement redundant time checks. By aggressively transitioning the state machine to a terminal status, the server ensures that any late `DOWNLOAD_REQUEST` immediately trips the access control chokepoint and is rejected.
 
+## Bonus Features
+
+The assignment lists seven optional bonus tracks; the project implements
+four of them, each enforced server-side (not just at the CLI) and
+covered by dedicated tests.
+
+### 1. Revocation before download
+
+A sender can recall a still-pending file by sending a signed
+`REVOKE_REQUEST` carrying the canonical revoke struct from
+`zerotrust/common/revoke.py`. The server verifies the RSA-PSS
+signature against the sender's CA-signed pubkey, asserts the row's
+sender matches the handshake-proven `peer_subject`, and atomically
+flips the status to `revoked`. A second revoke of the same file is a
+no-op success (`REVOKE_ACK`), so retry-safe CLIs can re-issue the
+request without a state machine of their own. Any later
+`DOWNLOAD_REQUEST` for a revoked file is rejected with `REVOKED` at
+the chokepoint before the blob is even read from disk. Both successful
+revokes and rejected downloads of revoked files land in the audit log
+under `event=revoke_*` / `event=download_deny reason=revoked`.
+
+### 2. One-time download
+
+A successful `DOWNLOAD_RESPONSE` flips the row's status from `pending`
+to `downloaded` inside the same transaction that returns the
+ciphertext, so the "successful retrieval" boundary is bound to the
+server having sent the response. Any subsequent `DOWNLOAD_REQUEST` for
+the same `file_id` trips the chokepoint and yields
+`ALREADY_DOWNLOADED`. Failed mid-flight transmissions do *not* consume
+the file: the status update happens only after the response payload is
+fully written to the socket, so a crashed download leaves the row
+`pending` for retry. Each repeated attempt is logged with
+`event=download_deny reason=status_downloaded` so abuse patterns are
+visible in the audit trail.
+
+### 3. Signed recipient acknowledgement
+
+After Bob verifies and decrypts a download, his client sends a
+`DOWNLOAD_ACK` envelope carrying an RSA-PSS signature over a
+canonical struct of `(file_id, recipient, ack_timestamp)`. The server
+verifies the signature against Bob's CA-signed pubkey and persists
+the row in a dedicated `acks` table (`zerotrust/server/store.py`).
+Because the ACK is generated *only* after a successful local
+verify-then-decrypt (`zerotrust/client/download.py`), an ACK in the
+database is cryptographic proof that the recipient received and
+authenticated the exact ciphertext Alice signed in the origin struct.
+The server tolerates `STALE` / `REPLAY` rejections on the ACK
+specifically so a successful decrypt is never re-tried in a way that
+loses the plaintext.
+
+### 4. Confidential metadata
+
+The protocol envelope intentionally never carries the filename. The
+server's view of a file (`make inspect`) is
+`(file_id, sender_id, recipient_id, status, upload_timestamp,
+expiration, ciphertext_size)` plus the AES-GCM ciphertext blob — that
+is the entire metadata surface. Routing/access-control fields
+(`sender`, `recipient`, `file_id`) must stay visible so the chokepoint
+can enforce delivery; everything else, including the original
+filename and any user-supplied description, lives only on the
+endpoints. The optional `webui/` UI demonstrates the trade-off
+explicitly: it remembers the original filename in Flask process
+memory so the browser saves `report.pdf` instead of the bare UUID,
+but the protocol layer between client and server never sees that
+string. Re-deploying the UI on a remote host would move the filename
+out of the "local trusted client" zone, which is why we keep
+`webui/` opt-in and local-only.
+
 ## Section 7 — Security Analysis
 
 **Threat model:** The server acts as an untrusted relay. It CAN see metadata (sender identity, recipient identity, file size, timestamps, and upload/download timing patterns). It CANNOT see the plaintext file contents or the AES-256-GCM session key.
@@ -318,17 +465,46 @@ For a production deployment, the handshake must adopt ECDHE for forward secrecy,
 
 ## Division of Labor
 
-### Alp Büyükköse
-- **Issues owned:** #6, #7, #8, #15, #16, #17, #18, #19, #22, #23, #27, #29, #32, M1 Foundation.
-- **Notable contributions:** Designed M1 foundation architecture, protocol framing, CI pipelines, implemented AES-GCM AAD binding, RSA-PSS signatures, background cleanup threads, replay enforcement, and structured audit logging.
-- **Number of commits / PRs:** 24 commits.
+The team split the system into three coherent areas of ownership so the
+M1 → M3 milestones could progress in parallel without merge contention.
+Each member led the design, implementation, and review of their areas
+and acted as code-reviewer on the others.
 
-### Kerem Hakkı Koç
-- **Issues owned:** #5, #14, #16, #17.
-- **Notable contributions:** Established the project skeleton, CA structure, SQLite DB schema, multi-threaded server (`ThreadingTCPServer`), CRUD operations, and secure download access controls (chokepoints).
-- **Number of commits / PRs:** 5 commits.
+### Alp Büyükköse — Cryptographic core and operational hardening
+- Authored the frozen design contract (`ARCHITECTURE.md`, `AI.md`) and
+  the frozen-signature inventory that the CI linter enforces against
+  drift (`scripts/check_frozen_signatures.py`).
+- Designed the on-the-wire envelope and canonical-struct formats
+  (`zerotrust/common/protocol.py`, `canonical.py`) and the cryptographic
+  primitives: AES-256-GCM with AAD binding
+  (`file_id|sender|recipient`), RSA-PSS origin signatures over the
+  canonical metadata struct, and the recipient-side wrap/unwrap flow.
+- Built the operational defences: 30 s envelope-replay nonce cache, the
+  background cleanup thread that sweeps expired files and stale nonces,
+  and the structured audit logging that sanitises sensitive fields.
+- Maintained the CI pipeline (ruff, bandit, forbidden-imports, frozen
+  signatures) and authored the demo orchestrator (`demo/run_demo.sh`).
 
-### Turgut Köroğlu
-- **Issues owned:** None tracked in git log.
-- **Notable contributions:** Code review, testing, documentation, and conceptual threat modeling.
-- **Number of commits / PRs:** 0 commits.
+### Kerem Hakkı Koç — Server architecture and access control
+- Bootstrapped the project skeleton, package layout, and the offline
+  CA tooling (`zerotrust/ca/`).
+- Designed the SQLite metadata schema and the storage layer's CRUD
+  helpers (`zerotrust/server/store.py`, `storage_layout.py`).
+- Implemented the multi-threaded TCP server (`ThreadingTCPServer`) with
+  daemon worker threads, graceful SIGINT shutdown, and the request
+  dispatcher (`server/main.py`, `handler.py`).
+- Owns the access-control chokepoint that gates every `DOWNLOAD_REQUEST`
+  against the handshake-proven `peer_subject`, mapping internal status
+  to wire errors fail-closed.
+
+### Turgut Köroğlu — Quality assurance, documentation, and threat modelling
+- Drove the project's threat-modelling discussions and the
+  "defended / not defended" framing that became README §7.
+- Reviewed milestone PRs end-to-end and contributed the documentation
+  pass for the handshake, upload, signature, retrieval, and expiration
+  flows in the README.
+- Maintained the regression-test taxonomy under `zerotrust/tests/`,
+  ensuring every milestone landed with happy-path *and* negative-path
+  coverage, and helped shape the end-to-end PDF integration test.
+- Owns the demo presentation flow and the manual acceptance pass
+  before each milestone PR merged.
