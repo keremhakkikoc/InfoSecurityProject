@@ -45,7 +45,7 @@ SESSION_KEY_BYTES = 32
 PRE_MASTER_BYTES = 32
 
 # Generic error code sent to the peer on ANY failure during the handshake.
-# Per AI.md §4.36 we MUST NOT leak the underlying reason.
+# We MUST NOT leak the underlying reason.
 _GENERIC_AUTH_FAILED = "AUTH_FAILED"
 
 

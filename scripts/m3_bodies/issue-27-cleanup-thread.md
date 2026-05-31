@@ -81,7 +81,7 @@ finally:
 - Resilience: monkeypatch `_expire_pending` to raise once → cleanup logs the exception but continues; next iteration works.
 
 ## Pitfalls — DO NOT do these
-- ❌ **DO NOT** share the cleanup thread's connection with request handlers. AI.md §5: each thread opens its own `sqlite3.Connection`.
+- ❌ **DO NOT** share the cleanup thread's connection with request handlers. Each thread opens its own `sqlite3.Connection`.
 - ❌ **DO NOT** call `time.sleep(interval)` — use `stop_event.wait(timeout=interval)` so shutdown wakes the thread immediately instead of waiting up to 60s.
 - ❌ **DO NOT** delete `'expired'` rows from `files` table. Keep them around for the audit trail; only `seen_nonces` actually shrinks.
 - ❌ **DO NOT** physically delete ciphertext blobs from disk in this thread. Not in scope. (Future enhancement, not for M3 baseline.)

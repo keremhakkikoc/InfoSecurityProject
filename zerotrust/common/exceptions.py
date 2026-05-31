@@ -1,4 +1,4 @@
-"""Custom exception hierarchy per AI.md §4.
+"""Custom exception hierarchy.
 
 Defining specific exception types makes the fail-closed flow explicit and testable.
 """

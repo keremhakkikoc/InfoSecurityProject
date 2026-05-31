@@ -37,7 +37,7 @@ client_<username>/
 4. Load `cert.json`, `private.pem` bytes, `ca_cert.json` (extract `public_key_pem`).
 5. Open `socket.create_connection((host, port))`, call `perform_client_handshake(...)`.
 6. On success: print `Authenticated as <username>; session established with <server_subject>.` Exit 0.
-7. On any failure: print generic `AUTH_FAILED` to stderr, exit 1. **Never leak the underlying reason** (AI.md §4.36).
+7. On any failure: print generic `AUTH_FAILED` to stderr, exit 1. **Never leak the underlying reason**.
 
 ## Acceptance criteria
 - [ ] `python -m zerotrust.client.cli --user alice login` connects to a running server and prints the success line.
@@ -58,5 +58,3 @@ client_<username>/
 
 ## References
 - ARCHITECTURE.md §4.2 (client storage layout)
-- AI.md §3.10 (password handling)
-- AI.md §4 (generic error responses to clients)

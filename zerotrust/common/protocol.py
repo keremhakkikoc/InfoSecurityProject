@@ -39,7 +39,7 @@ PROTOCOL_VERSION = 1
 def recvall(sock: socket.socket, n: int) -> bytes:
     """Receive exactly *n* bytes from *sock* or raise ProtocolError.
 
-    AI.md §2 forbids bare ``recv(n)`` because TCP may deliver fewer bytes than
+    Bare ``recv(n)`` is forbidden because TCP may deliver fewer bytes than
     requested. This helper loops until *n* bytes have arrived or the peer
     closes the connection.
     """

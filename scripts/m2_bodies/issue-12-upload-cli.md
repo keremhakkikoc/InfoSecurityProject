@@ -68,7 +68,7 @@ def upload_file(
 ## Pitfalls
 - Do NOT include the `aes_key` anywhere in the envelope — that defeats the whole zero-trust premise. Only `wrapped_key` goes on the wire.
 - Do NOT compute the sha256 of the **plaintext** — it leaks information about file content to the server. Hash only the ciphertext and wrapped key.
-- Base64 encode every binary field in JSON. AI.md §2 is explicit.
+- Base64 encode every binary field in JSON.
 - Keep the file-read in `with open(...) as f: f.read()` style so the file handle closes even on errors.
 
 ## References

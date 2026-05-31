@@ -13,7 +13,7 @@ stale timestamp, replayed nonce, unknown recipient, atomic-write crash)
 belongs to issue #20 (#13 in the milestone). The handler here already runs
 each check fail-closed; #20 will add the dedicated regression tests.
 
-SQLite rule (AI.md §5): each thread opens its own ``sqlite3.Connection``;
+SQLite rule: each thread opens its own ``sqlite3.Connection``;
 the connection is never cached at module scope.
 """
 
@@ -150,7 +150,7 @@ def _load_verified_pubkey_cert(
 
     Returns ``None`` for any reason — invalid username, missing file,
     unreadable file, malformed JSON, signature failure — so the caller
-    can map every miss to a single opaque ``NOT_FOUND`` per AI.md §4.36
+    can map every miss to a single opaque ``NOT_FOUND``
     without leaking which check tripped.
     """
     path = pubkey_path_for(server_state, username)
@@ -182,7 +182,7 @@ def _handle_get_pubkey(
     requester = session.get("peer_subject")
     cert = _load_verified_pubkey_cert(username, server_state, ca_pubkey_pem)
     if cert is None:
-        # AI.md §4.36: client sees a generic NOT_FOUND; the audit log keeps
+        # Client sees a generic NOT_FOUND; the audit log keeps
         # the real reason (unknown username vs. invalid cert vs. missing file)
         # collapsed into a single event but with the requested username so
         # the operator can correlate.
@@ -476,7 +476,7 @@ def _authorise_download(
     If success is False, error_code is the error to return to the client.
 
     Every fail-closed path emits a structured WARNING with the *real*
-    reason. The client still sees an opaque code per AI.md §4.36; the
+    reason. The client still sees an opaque code; the
     audit log is allowed to be specific so the operator can debug.
     """
     requester = session.get("peer_subject")
@@ -1035,7 +1035,7 @@ def _handle_revoke_request(
 def serve_connection(sock, addr, server_state):
     """Handle one client connection; runs on a dedicated worker thread.
 
-    Each thread opens its own ``sqlite3.Connection`` (AI.md §5 — no
+    Each thread opens its own ``sqlite3.Connection`` (no
     sharing) and closes it in ``finally`` so a bad client never leaks a
     DB handle.
     """

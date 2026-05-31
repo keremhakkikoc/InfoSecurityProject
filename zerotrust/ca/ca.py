@@ -17,7 +17,7 @@ Usage:
 Demo password handling: if --password is omitted, the value of the
 ``ZEROTRUST_CA_PASSWORD`` environment variable is used; if that is unset,
 the CLI falls back to the documented demo password ``demo-password``. The
-README MUST advertise this fallback (AI.md §3.10).
+README MUST advertise this fallback.
 """
 
 from __future__ import annotations

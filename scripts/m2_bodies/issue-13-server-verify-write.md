@@ -74,7 +74,7 @@ def _handle_upload_request(conn, session, payload):
 ## Pitfalls
 - Do NOT trust `payload["sender"]` over `session["peer_subject"]` — the latter is what your handshake proved. If they differ, REJECT immediately (impersonation attempt).
 - Do NOT write the ciphertext directly to its final path — write to `*.tmp` then `os.rename`. Otherwise a crash mid-write leaves corrupt rows.
-- Do NOT log the wrapped_key, ciphertext, or signature bytes — only their sha256 prefixes if at all. AI.md §3.
+- Do NOT log the wrapped_key, ciphertext, or signature bytes — only their sha256 prefixes if at all.
 - The server doesn't (and can't) verify the AES key or plaintext — its job is **only** to verify the signature over the canonical struct.
 
 ## References
@@ -82,4 +82,3 @@ def _handle_upload_request(conn, session, payload):
 - ARCHITECTURE.md §7.8 (replay protection)
 - ARCHITECTURE.md §7.9 (error codes — generic only)
 - ARCHITECTURE.md §8 (file lifecycle)
-- AI.md §3, §4 (logging, generic errors)

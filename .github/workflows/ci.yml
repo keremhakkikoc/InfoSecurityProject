@@ -63,7 +63,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Forbidden imports (AI.md §1.11, §3.27, §6.49; ARCHITECTURE.md §2)
+      - name: Forbidden imports (ARCHITECTURE.md §2)
         run: python scripts/check_forbidden_imports.py
 
       - name: Frozen function signatures (ARCHITECTURE.md §10.1)

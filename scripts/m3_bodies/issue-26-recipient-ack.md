@@ -65,4 +65,3 @@ Without an ACK, the server can't tell "decrypt+verify failed for Bob" from "Bob 
 ## References
 - ARCHITECTURE.md §5 (`acks` table schema)
 - ARCHITECTURE.md §8 (bonus: signed ACK)
-- AI.md §1.13 (constant-time only for cryptographic compare — RSA verify is constant-time at the library level)

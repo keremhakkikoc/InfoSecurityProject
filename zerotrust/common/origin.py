@@ -11,7 +11,7 @@ a malicious server cannot substitute either component (or just the wrapped
 key) and remain undetectable.
 
 Both hash fields are lowercase hex strings, not raw bytes — chosen for JSON
-portability per AI.md §2.
+portability.
 """
 
 from __future__ import annotations

@@ -13,7 +13,7 @@ deliberately ``event=<id> key=value key=value ...`` so the audit file is
 both human-grepable and machine-parsable, and so the test in
 ``test_audit_log.py`` can scan it with a Forbidden-list regex.
 
-Forbidden in any log line (ARCHITECTURE.md §9, AI.md §3 sensitive-data
+Forbidden in any log line (ARCHITECTURE.md §9 sensitive-data
 isolation):
 
 * Private keys / PEM bytes

@@ -32,7 +32,6 @@ docs:
       - any-glob-to-any-file:
           - "**/*.md"
           - ARCHITECTURE.md
-          - AI.md
           - README.md
 
 ci:

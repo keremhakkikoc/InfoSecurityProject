@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Enforce the bans listed in AI.md §1.11 and ARCHITECTURE.md §2.
+"""Enforce the bans listed in ARCHITECTURE.md §2.
 
 This script scans every `.py` file under ``zerotrust/`` (excluding tests and
 legacy) and fails CI if any of the following appears:
 
-    - ``import ssl`` / ``from ssl ...``                  (banned in AI.md §1.11)
-    - ``import paramiko`` / ``from paramiko ...``        (banned in AI.md §1.11)
-    - ``import pickle`` / ``from pickle ...``            (banned in AI.md §6.49)
-    - ``import random`` / ``from random ...``            (banned in AI.md §3.27)
+    - ``import ssl`` / ``from ssl ...``                  (banned)
+    - ``import paramiko`` / ``from paramiko ...``        (banned)
+    - ``import pickle`` / ``from pickle ...``            (banned)
+    - ``import random`` / ``from random ...``            (banned)
     - Literal mentions of ``AES-CBC`` / ``AES-CTR`` /
       ``AES.MODE_CBC`` / ``AES.MODE_CTR`` / ``algorithms.AES`` with CBC/CTR
                                                           (banned in ARCHITECTURE.md §2)
@@ -31,13 +31,13 @@ EXCLUDED_DIRS = {"tests", "__pycache__", ".pytest_cache", "legacy", "venv", ".ve
 # Each rule: (regex, human-readable reason)
 RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^\s*(?:import|from)\s+ssl(?:\s|\.|$)"),
-     "AI.md §1.11: ssl module is forbidden (we hand-roll the handshake)"),
+     "ssl module is forbidden (we hand-roll the handshake)"),
     (re.compile(r"^\s*(?:import|from)\s+paramiko(?:\s|\.|$)"),
-     "AI.md §1.11: paramiko is a pre-built secure-channel library"),
+     "paramiko is a pre-built secure-channel library"),
     (re.compile(r"^\s*(?:import|from)\s+pickle(?:\s|\.|$)"),
-     "AI.md §6.49: pickle is forbidden for serialization (use JSON)"),
+     "pickle is forbidden for serialization (use JSON)"),
     (re.compile(r"^\s*(?:import|from)\s+random(?:\s|\.|$)"),
-     "AI.md §3.27: use os.urandom / secrets, never the random module"),
+     "use os.urandom / secrets, never the random module"),
     (re.compile(r"\bAES[-_\.]?(?:MODE[_\.])?(?:CBC|CTR)\b"),
      "ARCHITECTURE.md §2: AES-CBC and AES-CTR are forbidden, use AES-GCM"),
     (re.compile(r"\bhashlib\.sha1\b|\bhashes\.SHA1\b"),

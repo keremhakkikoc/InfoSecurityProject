@@ -5,7 +5,7 @@ the authenticated handshake from ARCHITECTURE.md §7.4 + §7.5. Future CLI
 commands (upload, list, download) re-use ``login_session`` so the session
 bootstrap path is a single place to audit.
 
-Per AI.md §3.10 the user password is held in memory for the duration of the
+The user password is held in memory for the duration of the
 call only — never written to disk, never logged.
 """
 
@@ -99,8 +99,7 @@ def login_session(username: str, password: bytes) -> dict[str, Any]:
         ClientAssetError: missing / malformed local files.
         ConnectionRefusedError, TimeoutError, OSError: network issues.
         AuthError, CryptoError, ProtocolError: handshake / auth failures
-            (the CLI collapses these to a generic ``AUTH_FAILED`` per
-            AI.md §4.36).
+            (the CLI collapses these to a generic ``AUTH_FAILED``).
     """
     client_dir = client_dir_for_user(username)
     config_path = client_dir / "config.json"
@@ -183,7 +182,7 @@ def connected_session(username: str, password: bytes) -> Iterator[dict[str, Any]
     handshake — never inside ``perform_client_handshake``. The socket is
     closed unconditionally when the ``with`` block exits.
 
-    Per AI.md §3.10 the password is held in memory for the lifetime of the
+    The password is held in memory for the lifetime of the
     ``with`` block and not persisted.
     """
     (

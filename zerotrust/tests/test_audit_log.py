@@ -2,8 +2,7 @@
 
 This file is the single canonical proof that the server's audit logging
 honours both the *format contract* (ARCHITECTURE.md §9 severity matrix +
-mandatory ``event=...`` shape) AND the *isolation contract* (AI.md §3.25
-— no private keys, plaintext, session keys, AES file keys, full
+mandatory ``event=...`` shape) AND the *isolation contract* (no private keys, plaintext, session keys, AES file keys, full
 signatures, or passwords in any log line).
 
 The tests drive the real server through a ``ThreadingTCPServer`` thread

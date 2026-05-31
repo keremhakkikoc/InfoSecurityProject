@@ -266,7 +266,7 @@ class TestCleanupThread:
         assert calls["n"] >= 2, "flaky helper should have been called twice"
 
     def test_thread_is_daemon(self, tmp_path):
-        """Per AI.md / ARCHITECTURE.md §6: background threads must be daemons."""
+        """Per ARCHITECTURE.md §6: background threads must be daemons."""
         db_path = str(tmp_path / "cleanup_daemon.db")
         thread, stop_event = cleanup.start_cleanup_thread(db_path, interval=10)
         try:

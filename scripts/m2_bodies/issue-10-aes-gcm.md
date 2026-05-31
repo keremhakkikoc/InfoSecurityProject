@@ -75,9 +75,8 @@ def test_aad_recipient_mismatch():
 - **Never** reuse an AES-GCM `(key, nonce)` pair. Since we generate a fresh key per file, you're safe by construction — but don't ever invent a "deterministic nonce" optimisation.
 - AAD is bytes, not str. Use `.encode()`.
 - Do NOT compress plaintext "to make ciphertext smaller" — CRIME-class attacks.
-- Do NOT log the AES key, plaintext, or even the AAD with full identifiers — AI.md §3.
+- Do NOT log the AES key, plaintext, or even the AAD with full identifiers.
 
 ## References
 - ARCHITECTURE.md §2 (AES-256-GCM)
 - ARCHITECTURE.md §7.7 (AAD binding format)
-- AI.md §3 (Sensitive Data Isolation)

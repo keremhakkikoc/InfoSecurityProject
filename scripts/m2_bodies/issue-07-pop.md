@@ -52,10 +52,9 @@ def _build_transcript_hash(nonce_c: bytes, nonce_s: bytes,
 ## Pitfalls
 - Do NOT hash only the nonces and forget `pre_master_ct` — without binding the encrypted secret, an attacker can swap pre-masters across sessions.
 - Do NOT sign the **plaintext** pre-master — sign its **ciphertext** (the OAEP output), so both sides can recompute the hash before the server has even decrypted. Spec is explicit.
-- Do NOT log the signature itself or the transcript hash bytes — log only a fingerprint. AI.md §3.
+- Do NOT log the signature itself or the transcript hash bytes — log only a fingerprint.
 - Remember: `rsa_verify` returns `bool`, never raises. Don't wrap it in try/except.
 
 ## References
 - ARCHITECTURE.md §7.4 (Handshake Flow, Mutual PoP)
 - ARCHITECTURE.md §2 (RSA-PSS for signatures)
-- AI.md §3 (Sensitive Data Isolation — never log secrets)

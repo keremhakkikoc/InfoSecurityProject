@@ -22,7 +22,7 @@ help:
 	@echo "  test            run pytest"
 	@echo "  test-cov        run pytest with coverage report"
 	@echo "  lint            run ALL lint checks (forbidden + frozen + bandit + ruff)"
-	@echo "  lint-forbidden  check banned imports (AI.md §1.11, etc.)"
+	@echo "  lint-forbidden  check banned imports"
 	@echo "  lint-frozen     check frozen signatures (ARCHITECTURE.md §10.1)"
 	@echo "  lint-bandit     security linter (bandit)"
 	@echo "  lint-ruff       style linter (ruff check)"

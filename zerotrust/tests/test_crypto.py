@@ -1,7 +1,7 @@
 """Tests for common.crypto_primitives.
 
 Each primitive has a happy-path test and at least one negative-path test
-covering tampering / wrong key / wrong AAD per AI.md §5.42.
+covering tampering / wrong key / wrong AAD.
 """
 
 from __future__ import annotations

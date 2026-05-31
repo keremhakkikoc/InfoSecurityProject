@@ -126,7 +126,7 @@ def mark_expired(conn: sqlite3.Connection, *, now: int | None = None) -> int:
     audit history is preserved.
 
     Args:
-        conn: Thread-local sqlite3 connection (AI.md §5 — never shared).
+        conn: Thread-local sqlite3 connection (never shared).
         now: Override the current time. Defaults to ``int(time.time())``.
             Tests force-advance the clock by passing this explicitly.
 

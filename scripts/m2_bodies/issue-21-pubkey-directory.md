@@ -65,4 +65,3 @@ The CA writes `users/<name>/cert.json`. For M2, **the team manually copies** eac
 ## References
 - ARCHITECTURE.md §7.3 (message types)
 - ARCHITECTURE.md §4.1 (server storage layout — pubkeys/)
-- AI.md §4.36 (generic error codes)

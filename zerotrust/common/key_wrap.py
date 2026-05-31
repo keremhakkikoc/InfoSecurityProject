@@ -8,7 +8,7 @@ The recipient certificate is the contract here, not the raw PEM: callers pass
 a CA-verified certificate dict, and this module extracts the public key for
 wrapping per ARCHITECTURE.md §2 and §3.
 
-Per AI.md §3, wrapped bytes must NEVER be exported via ``str()`` — base64
+Wrapped bytes must NEVER be exported via ``str()`` — base64
 encode (``base64.b64encode(wrapped).decode("ascii")``) before placing in any
 JSON payload.
 """

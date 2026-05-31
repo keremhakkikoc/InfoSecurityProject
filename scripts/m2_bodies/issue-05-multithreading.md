@@ -50,4 +50,3 @@ log = get_logger("server.main", log_file="server/logs/audit.log")
 ## References
 - ARCHITECTURE.md §6 (Concurrency Model)
 - ARCHITECTURE.md §10 (Module Layout)
-- AI.md §4 (Exceptions & Error Handling — resilience)

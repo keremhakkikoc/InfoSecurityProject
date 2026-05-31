@@ -56,4 +56,3 @@ from zerotrust.server.store import list_pending_for
 ## References
 - ARCHITECTURE.md §7.3 (message types: LIST_PENDING / PENDING_LIST)
 - ARCHITECTURE.md §8 (file lifecycle — list)
-- AI.md §4 (generic errors only — if `peer_subject` is somehow None, return NOT_FOUND, not detail)

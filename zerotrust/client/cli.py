@@ -12,12 +12,12 @@ This module implements the ``login`` subcommand (issue #15) and registers
 placeholder argparse subcommands for the upload/list/download verbs so
 future milestones can fill them in without changing the dispatcher shape.
 
-Password handling (AI.md §3.10):
+Password handling:
     priority: ``--password`` arg > env var ``ZEROTRUST_USER_PASSWORD`` >
     interactive ``getpass.getpass()`` prompt. The password is held in
     memory for the lifetime of the command only.
 
-Error reporting (AI.md §4.36):
+Error reporting:
     Auth / crypto / protocol failures collapse to the single string
     ``AUTH_FAILED`` on stderr with no stack trace. Local filesystem and
     network errors expose their underlying cause because they are not

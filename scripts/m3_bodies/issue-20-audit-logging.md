@@ -62,5 +62,3 @@ Every event line includes (at minimum):
 
 ## References
 - ARCHITECTURE.md §9 (logging spec — format, file paths, severity table)
-- AI.md §3.25 (sensitive data isolation — non-negotiable)
-- AI.md §4.36 (generic error codes — log detail / wire opacity)

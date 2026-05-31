@@ -11,7 +11,7 @@ Once a minute the server runs a single cleanup pass that:
 
 Both ``run_cleanup_pass`` and ``start_cleanup_thread`` accept a
 ``clock`` callable so tests can force-advance time without monkey-patching
-the global ``time`` module. The thread itself is a daemon (AI.md / §6) —
+the global ``time`` module. The thread itself is a daemon —
 it must never block process shutdown.
 
 The loop is fail-tolerant: a transient SQLite or filesystem error during
@@ -61,8 +61,8 @@ def _cleanup_loop(
 ) -> None:
     """Body of the daemon thread; loops until ``stop_event`` is set."""
     logger.info("[cleanup] started (interval=%ss, db=%s)", interval, db_path)
-    # Each thread opens its own sqlite3 connection — AI.md §5 forbids
-    # sharing a connection across threads.
+    # Each thread opens its own sqlite3 connection; we never share
+    # a connection across threads.
     conn: sqlite3.Connection | None = None
     try:
         conn = store.open_connection(db_path)

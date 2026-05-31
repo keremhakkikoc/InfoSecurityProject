@@ -1,7 +1,7 @@
 # ARCHITECTURE — Secure Zero-Trust File Drop System
 
 > **Status:** Frozen at Phase 1. Deviations require team consensus and an issue update.
-> **Audience:** Developers (humans + AI assistants). This document is the source of truth for system-level decisions. If `AI.md` and this file conflict, this file wins on architecture; `AI.md` wins on coding rules.
+> **Audience:** Developers (humans + AI assistants). This document is the source of truth for system-level decisions.
 
 ---
 
@@ -348,7 +348,6 @@ The client never receives the underlying reason (e.g., "invalid signature" vs "w
 ```
 zerotrust/
 ├── ARCHITECTURE.md            (this file)
-├── AI.md
 ├── README.md
 ├── requirements.txt
 ├── common/

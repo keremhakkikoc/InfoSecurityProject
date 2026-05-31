@@ -53,7 +53,7 @@ def generate_rsa_keypair(password: bytes) -> tuple[bytes, bytes]:
     """Generate a fresh RSA-2048 keypair.
 
     Returns ``(private_pem_encrypted, public_pem)``. The private PEM is
-    protected with ``BestAvailableEncryption(password)`` per AI.md §3.10 and
+    protected with ``BestAvailableEncryption(password)`` per
     ARCHITECTURE.md §4.3 — passing an empty password is a programming error
     and is refused at runtime.
     """
@@ -137,7 +137,7 @@ def rsa_oaep_decrypt(private_pem: bytes, password: bytes, data: bytes) -> bytes:
 
     Raises CryptoError on any decryption failure (wrong key, padding error,
     truncation). The error message is intentionally vague — call sites should
-    surface ``AUTH_FAILED`` to clients per AI.md §4.36.
+    surface ``AUTH_FAILED`` to clients.
     """
     key = _load_private(private_pem, password)
     try:

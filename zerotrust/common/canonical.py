@@ -1,6 +1,6 @@
 """Canonical JSON serialisation for content that will be signed.
 
-ARCHITECTURE.md §3.2 and AI.md §2 mandate ``sort_keys=True`` and
+ARCHITECTURE.md §3.2 mandates ``sort_keys=True`` and
 ``separators=(",", ":")`` for **any** JSON before signing or verification.
 Even a single byte of whitespace difference invalidates the signature, so
 all signing/verifying code paths MUST go through this module.

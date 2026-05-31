@@ -69,7 +69,7 @@ Symmetric. The client generates `pre_master = os.urandom(32)`, encrypts it with 
 
 ## Pitfalls
 - The HKDF `salt = nonce_c + nonce_s` order matters. BOTH sides must concatenate the same way. ARCHITECTURE.md §7.5 fixes the order.
-- Do NOT log `pre_master`, `c2s_key`, `s2c_key`, or `transcript_hash`. Only fingerprints. AI.md §3 is non-negotiable.
+- Do NOT log `pre_master`, `c2s_key`, `s2c_key`, or `transcript_hash`. Only fingerprints.
 - `hkdf_derive(..., extra="")` — leave `extra` at its default unless you have a documented reason. We added that param but it's not actively used in M2.
 - Use the protocol envelope for every message (`make_envelope` + `pack_message`). Don't roll your own JSON.
 - Pre-handshake messages are **plaintext** (carrying certs). After SESSION_OK, every subsequent envelope is encrypted with `s2c_key` / `c2s_key`. M2 doesn't yet exercise post-handshake encrypted traffic — that's #12 / #13's job — but the keys live in the returned dict for them.
@@ -77,5 +77,3 @@ Symmetric. The client generates `pre_master = os.urandom(32)`, encrypts it with 
 ## References
 - ARCHITECTURE.md §7.4 (Handshake Flow, the ladder diagram)
 - ARCHITECTURE.md §7.5 (HKDF Derivation)
-- AI.md §1.11 (no SSL libs — hand-rolled handshake)
-- AI.md §3 (Sensitive Data Isolation)

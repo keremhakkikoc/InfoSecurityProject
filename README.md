@@ -10,8 +10,7 @@ SSL/TLS libraries are deliberately not used; the handshake, key derivation,
 and end-to-end encryption are implemented from scratch on top of the
 `cryptography` library's primitives.
 
-> See `ARCHITECTURE.md` for the system design (frozen at end of Phase 1)
-> and `AI.md` for coding rules.
+> See `ARCHITECTURE.md` for the system design (frozen at end of Phase 1).
 
 ## Team Members
 
@@ -196,7 +195,7 @@ make inspect                     # registered pubkeys + DB rows + ciphertext blo
 
 ## Demo password handling
 
-Per `AI.md` §3.10, all PEM-encoded private keys are protected with
+All PEM-encoded private keys are protected with
 `BestAvailableEncryption(password)`. The CA and the client CLI both
 resolve their passwords through the same three-step ladder:
 
@@ -523,10 +522,10 @@ merge pipeline:
    one other team member. **Alp owned the merge button** and resolved
    any merge conflicts that arose when parallel M2/M3 branches landed
    close together.
-5. **Frozen contracts** — `ARCHITECTURE.md` (system design, wire
-   protocol §7, SQLite schema §5, frozen signatures §10.1) and `AI.md`
-   (zero-trust coding rules) were authored in M1 and treated as
-   read-only specs afterwards; the frozen-signatures linter mechanically
+5. **Frozen contract** — `ARCHITECTURE.md` (system design, wire
+   protocol §7, SQLite schema §5, frozen signatures §10.1) was
+   authored in M1 and treated as a
+   read-only spec afterwards; the frozen-signatures linter mechanically
    enforces that runtime code stays faithful to the design.
 
 This separation let three people work in parallel after M1 without
@@ -545,7 +544,7 @@ acceptance criteria, every merge passed CI.
 ### Areas in detail
 
 **Alp Büyükköse — Cryptographic core, operational hardening, pipeline**
-authored the frozen design contract (`ARCHITECTURE.md`, `AI.md`) and
+authored the frozen design contract (`ARCHITECTURE.md`) and
 the frozen-signature inventory the CI linter enforces against drift.
 Implemented the cryptographic primitives — AES-256-GCM with AAD binding
 (`file_id|sender|recipient`), RSA-PSS origin signatures over the

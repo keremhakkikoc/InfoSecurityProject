@@ -22,7 +22,7 @@ cd "${REPO_ROOT}"
 PORT="${ZEROTRUST_DEMO_PORT:-5050}"
 SAMPLE_FILE="demo/sample_files/report.pdf"
 
-# Canonical demo password — documented in AI.md §3.10 and README.
+# Canonical demo password — documented in the README.
 export ZEROTRUST_CA_PASSWORD="${ZEROTRUST_CA_PASSWORD:-demo-password}"
 export ZEROTRUST_USER_PASSWORD="${ZEROTRUST_USER_PASSWORD:-demo-password}"
 

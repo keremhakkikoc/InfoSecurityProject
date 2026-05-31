@@ -74,4 +74,3 @@ def test_tamper_any_field_invalidates(field, ...):
 ## References
 - ARCHITECTURE.md §7.6 (Signed File-Origin Struct)
 - ARCHITECTURE.md §2 (RSA-PSS for signatures)
-- AI.md §2 (Canonical JSON for Signing)

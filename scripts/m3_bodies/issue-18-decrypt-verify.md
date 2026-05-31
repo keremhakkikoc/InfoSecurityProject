@@ -82,11 +82,10 @@ def verify_and_decrypt_download(payload, my_priv_pem, my_password, ca_pubkey_pem
 - ❌ **DO NOT** use `cryptography.x509`. The `sender_cert` payload is the project's custom JSON cert format. Pass it directly to `verify_certificate(cert_dict, ca_pem, expected_subject=...)`.
 - ❌ **DO NOT** roll your own canonical string for signature input. Use `zerotrust.common.origin.verify_origin_struct`, which internally uses `canonical_json` so client and server agree byte-for-byte. **Past mistake (#13):** `canonical_str = f"{sender}|{recipient}|..."` — wrong, no canonical encoding, doesn't match Turgut's sender side.
 - ❌ **DO NOT** ignore the AAD. The whole point of AES-GCM is the auth tag binding context; if you forget to pass AAD, recipient swap attacks succeed silently.
-- ❌ **DO NOT** print or log `aes_key`, `plaintext`, or the unwrapped pre-master. AI.md §3.25 — sensitive isolation.
+- ❌ **DO NOT** print or log `aes_key`, `plaintext`, or the unwrapped pre-master.
 - ❌ **DO NOT** wrap `unwrap_aes_key` failure in a generic `Exception` and continue. Let `CryptoError` propagate; the caller turns it into a user-facing `AUTH_FAILED`.
 
 ## References
 - ARCHITECTURE.md §7.6 (signed origin struct — the 7 fields)
 - ARCHITECTURE.md §7.7 (AAD format: `f"{file_id}|{sender}|{recipient}"`)
 - ARCHITECTURE.md §8 (file lifecycle — recipient verify + decrypt)
-- AI.md §3 (sensitive data isolation)

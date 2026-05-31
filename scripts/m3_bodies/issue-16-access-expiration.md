@@ -53,11 +53,10 @@ Each is logged with full detail server-side, but the **client receives only the 
 ## Pitfalls — DO NOT do these
 - ❌ **DO NOT** trust `payload["recipient"]` for the authorisation check. Source of truth is `session["peer_subject"]`. Past mistake: `sender = payload.get("sender")` in #13 — same anti-pattern, don't repeat.
 - ❌ **DO NOT** return different error messages for "not yours" vs "doesn't exist". Both should be `NOT_FOUND`-or-`NOT_AUTHORIZED`-style opaque codes; never "file exists but not yours" (that leaks existence info).
-- ❌ **DO NOT** use `hmac.compare_digest` for subject equality. AI.md §1.13 mandates it for **secrets**; subjects are public identifiers.
+- ❌ **DO NOT** use `hmac.compare_digest` for subject equality. Constant-time compare is only for **secrets**; subjects are public identifiers.
 - ❌ **DO NOT** roll your own clock — use `int(time.time())`. Mockability comes from `monkeypatch.setattr("time.time", ...)`.
 - ❌ **DO NOT** silently downgrade a `REVOKED` to `EXPIRED` or `NOT_FOUND` — the exact reason matters for the audit log even if it's hidden from the client.
 
 ## References
 - ARCHITECTURE.md §8 (file lifecycle — expiration, revocation)
 - ARCHITECTURE.md §7.9 (error codes — generic to client, detailed in logs)
-- AI.md §4 (generic responses to clients)

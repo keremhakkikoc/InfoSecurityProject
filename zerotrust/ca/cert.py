@@ -91,8 +91,7 @@ def verify_certificate(
 
     The subject comparison uses plain ``==`` deliberately: subjects are
     public identifiers, not secrets, so there is no timing side-channel
-    concern (AI.md §1.13 mandates constant-time only for MACs / signatures
-    / nonces).
+    concern.
     """
     if not isinstance(cert, dict):
         return False

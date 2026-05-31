@@ -1,7 +1,7 @@
 """Tests for the transcript hash + Proof-of-Possession sign/verify flow.
 
-Covers ARCHITECTURE.md §7.4 (mutual PoP) and AI.md §3 (never log secrets,
-never raise on attacker input). Implements every Acceptance Criterion and
+Covers ARCHITECTURE.md §7.4 (mutual PoP). The tests never log secrets and
+never raise on attacker input. Implements every Acceptance Criterion and
 Required Test from M2 issue #7.
 
 The PoP itself is not a new function — it's the existing

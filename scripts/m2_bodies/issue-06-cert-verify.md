@@ -59,10 +59,9 @@ def test_verify_with_mismatched_subject(ca_keys, user_keys):
 
 ## Pitfalls
 - Do NOT change the signature in a non-backwards-compatible way (e.g., positional `expected_subject`). Default `None` is mandatory.
-- Do NOT use `hmac.compare_digest` for subject strings — they're public, not secrets. AI.md §1.13 talks about constant-time for MACs/signatures, not identifiers.
+- Do NOT use `hmac.compare_digest` for subject strings — they're public, not secrets. Constant-time compare is for MACs/signatures, not identifiers.
 - Do NOT forget to also update `scripts/check_frozen_signatures.py` EXPECTED — otherwise the next CI run on `main` goes red.
 
 ## References
 - ARCHITECTURE.md §3.4 (Verification, 3 steps)
 - ARCHITECTURE.md §10.1 (Frozen signatures)
-- AI.md §1 (Function Signatures Are Contracts)

@@ -7,7 +7,7 @@ prevents an attacker (or a curious server) from substituting one row's
 ciphertext into another row's metadata — the GCM auth tag depends on the AAD,
 so any reuse breaks decryption with ``CryptoError``.
 
-Per AI.md §3, this module must NEVER log the AES key, plaintext, or AAD with
+This module must NEVER log the AES key, plaintext, or AAD with
 full identifiers. Only the high-level ``CryptoError`` from the underlying
 primitive is allowed to escape.
 """

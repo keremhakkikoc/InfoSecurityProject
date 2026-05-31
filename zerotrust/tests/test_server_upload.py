@@ -15,7 +15,7 @@ each test can corrupt exactly one thing:
 * unknown recipient → encrypt for a user not in ``pubkeys/``
 * atomic write → monkey-patch ``Path.open`` to raise mid-write
 
-Pitfall from AI.md §4.36: every failure must surface as a generic code
+Pitfall: every failure must surface as a generic code
 to the client (no internal-reason leak) and leave no metadata row /
 no final blob on disk.
 """
@@ -389,7 +389,7 @@ def test_replayed_envelope_is_rejected_second_time(env):
 
     assert second["type"] == "ERROR"
     # We deliberately collapse REPLAY and STALE into one generic code on
-    # the wire (AI.md §4.36) — the server's check_and_record returns False
+    # the wire — the server's check_and_record returns False
     # for both reasons, surfaced as "STALE" by the handler.
     assert second["payload"]["code"] in {"STALE", "REPLAY"}
 
