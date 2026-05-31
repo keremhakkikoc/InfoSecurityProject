@@ -87,11 +87,6 @@ def cmd_login(args: argparse.Namespace) -> int:
     return 0
 
 
-def _not_implemented(command: str) -> int:
-    print(f"{command} command is not implemented yet.", file=sys.stderr)
-    return 2
-
-
 def cmd_upload(args: argparse.Namespace) -> int:
     """Open a session and upload ``args.file`` to ``args.recipient``."""
     password = _resolve_password(args.password)
