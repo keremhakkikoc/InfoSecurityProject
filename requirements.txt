@@ -1,5 +1,5 @@
 # Kriptografik işlemler (RSA pub/priv key üretimi, sertifika imzalama, HKDF, AES vb.)
-cryptography>=48.0.0
+cryptography>=50.0.0
 
 # Test framework
 pytest>=9.0.3
